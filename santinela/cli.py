@@ -3,6 +3,7 @@
     python -m santinela.cli --scenario dunare --out out/
     python -m santinela.cli --scenario val --out out/
     python -m santinela.cli --calibrate exercitiu.csv
+    python -m santinela.cli --inspect captura.bin flux.nmea --config surse.json
 """
 from __future__ import annotations
 
@@ -26,7 +27,27 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="out")
     ap.add_argument("--drones-js", default=None, help="fisele site-ului, pentru vitezele pe clase")
     ap.add_argument("--calibrate", default=None, help="CSV din exercitiul de coordonate (Faza 0)")
+    ap.add_argument("--inspect", nargs="+", default=None,
+                    help="fisiere de captura (ASTERIX binar, NMEA, SAPIENT/JSON): recunoaste formatul si "
+                         "spune ce configurare lipseste")
+    ap.add_argument("--config", default=None, help="configurarea surselor (JSON) pentru --inspect")
     a = ap.parse_args(argv)
+
+    if a.inspect:
+        from .universal import UniversalAdapter
+        ad = UniversalAdapter.from_config(a.config) if a.config else UniversalAdapter()
+        n = 0
+        for path in a.inspect:
+            n += len(ad.feed_file(path, source=None))
+        print(json.dumps({"intrari_pentru_tracker": n, **ad.report()}, indent=2, ensure_ascii=False))
+        req = ad.requirements()
+        if req:
+            print("\nCe lipseste:")
+            for r in req:
+                print("  - " + r)
+            print("\nSablon de configurare (completati si dati cu --config):")
+            print(json.dumps(ad.config_template(), indent=2, ensure_ascii=False))
+        return 0
 
     if a.calibrate:
         pp = estimate_population(load_csv(a.calibrate))

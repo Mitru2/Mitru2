@@ -47,6 +47,9 @@ class RadarSite:
     sic: int | None = None
     center: np.ndarray | None = None  # se completeaza la inregistrare in tracker
     active: bool = True
+    negative_info: bool = True        # False pentru surse fara acoperire cunoscuta (trasee de sistem, JSON)
+    heading_deg: float = 0.0          # pentru azimut relativ (radare navale, NMEA "R")
+    kind: str = "radar"               # "radar" | "sistem" | "senzor"
 
     @property
     def post_id(self) -> str:
@@ -58,7 +61,7 @@ class RadarSite:
 
     def coverage_radius(self, altitude_floor: float | None) -> float | None:
         """Raza in care radarul ar fi trebuit sa vada tinta, sau None daca nu se stie."""
-        if altitude_floor is None or altitude_floor < self.min_alt:
+        if not self.negative_info or altitude_floor is None or altitude_floor < self.min_alt:
             return None
         return min(self.max_range, radar_horizon(self.antenna_height, altitude_floor))
 
@@ -82,6 +85,8 @@ class RadarPlot:
     height_m: float | None = None     # inaltime (radar 3D) sau din nivel de zbor
     drone_class: str | None = None
     received_at: float | None = None
+    icao: str | None = None           # adresa Mode S, daca tinta are transponder
+    cooperative: bool = False         # raspuns SSR/Mode S -> aeronava cooperativa, nu drona
 
 
 @dataclass

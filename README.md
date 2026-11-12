@@ -10,11 +10,12 @@ Totul este explicabil și reproductibil: aceleași intrări dau aceleași ieșir
 
 ```bash
 pip install -e '.[test]'
-python -m pytest                                        # 63 de teste, ~20 s
+python -m pytest                                        # 84 de teste, ~20 s
 python -m santinela.cli --scenario dunare --out out/    # scenariul „Dunăre” (cu radar, detecții)
 python -m santinela.cli --scenario dunare --radar-mode tracks --out out/tr   # radarul trimite trasee
 python -m santinela.cli --scenario val --out out/val    # val dens de 12 ținte
 python -m santinela.cli --calibrate exercitiu.csv       # Faza 0 pe date reale
+python -m santinela.cli --inspect captura.bin flux.nmea # ce format are, ce configurare lipseste
 ```
 
 Harta: deschideți `viewer/index.html` și încărcați `out/cop.geojson`
@@ -39,7 +40,8 @@ Harta: deschideți `viewer/index.html` și încărcați `out/cop.geojson`
 | Faza 6 – fuziune de trasee prin intersecția covarianțelor; atributul „emisie mesh/4G” | `fusion.py`, `track.py` | ✅ (fără poarta SAPIENT) |
 | Scenariul de test „Dunăre” | `sim.py` | ✅ date publice, observatori și radar fictivi |
 | Radare: detecții polare, Doppler, trasee radar prin CI, acoperire după altitudine, înregistrare | `radar.py`, `tracker.py` | ✅ |
-| Adaptor ASTERIX CAT048 | `asterix.py` | ✅ după specificația publică; **de validat pe înregistrări reale** |
+| Adaptor ASTERIX CAT048 / CAT062 / CAT021 | `asterix.py` | ✅ după specificația publică; **de validat pe înregistrări reale** |
+| Adaptor universal (ASTERIX, SAPIENT JSON, NMEA, JSON de producător), cu detectarea formatului | `universal.py` | ✅ |
 
 ### Criterii de acceptare acoperite de teste
 
@@ -85,7 +87,36 @@ Harta: deschideți `viewer/index.html` și încărcați `out/cop.geojson`
 
 Rămân de verificat cu producătorul/operatorul radarului: convenția de semn pentru Doppler,
 referința înălțimii, altitudinea minimă reală din diagrama de acoperire, densitatea de alarme false.
-CAT062 (trasee de sistem) și SAPIENT nu sunt implementate.
+CAT062, CAT021, SAPIENT și NMEA sunt acum acoperite de adaptorul universal (mai jos).
+
+## Adaptorul universal
+
+Un singur punct de intrare pentru toate sursele: `UniversalAdapter.feed(mesaj)` recunoaște formatul
+și întoarce intrări pentru tracker.
+
+| Format | Recunoscut după | Ce produce | Ce cere |
+|---|---|---|---|
+| ASTERIX CAT048 | blocuri cu lungime coerentă | detecții sau trasee radar | poziția radarului (SAC/SIC → lat, lon, antenă) |
+| ASTERIX CAT062 | idem | trasee de sistem | nimic dacă are I062/105 (WGS-84); altfel punctul de referință |
+| ASTERIX CAT021 | idem | aeronave ADS-B → calibrarea radarelor | nimic |
+| alte categorii ASTERIX (CAT034, CAT240 …) | idem | sunt ignorate, apar în raport | – |
+| SAPIENT JSON (BSI Flex 335) | chei `detectionReport` / `statusReport` | detecții sau trasee | poziția nodului (se învață din `statusReport`) |
+| SAPIENT binar (protobuf) | antet de 4 octeți cu lungimea | – | un decodor protobuf dat ca `sapient_decoder` |
+| NMEA 0183 (`TTM`, `TLL`, `HDT`) | `$…*hh`, cu suma de control verificată | trasee radar navale | poziția radarului pentru `TTM`; capul pentru relevmente relative |
+| JSON de producător | orice alt JSON | detecții sau trasee | un profil (`JsonProfile`); fără el, câmpurile sunt ghicite după nume |
+
+- **Sursele cu poziții absolute** (lat/lon) sunt acceptate imediat, dar fără informație negativă până
+  la configurarea acoperirii. **Sursele polare** (distanță/azimut) așteaptă poziția senzorului.
+- **Aeronavele cooperative** (ADS-B, plot-uri SSR/Mode S, trasee de sistem cu cod de transponder) nu
+  intră în trackerul de drone. Plot-urile Mode S ale unui radar se împerechează cu ADS-B după adresa
+  ICAO, iar radarul se calibrează automat (azimut, distanță, ceas).
+- `requirements()` spune, pe surse, ce lipsește; `config_template()` dă un șablon de completat, iar
+  `UniversalAdapter.from_config(fișier)` îl încarcă. Din linia de comandă: `--inspect` și `--config`.
+- Clasificările sigure de non-dronă din SAPIENT (pasăre, persoană, vehicul, ≥ 0,8) sunt ignorate.
+
+Nesigur, de confirmat pe documentul de interfață al fiecărei surse: în SAPIENT, `Location.x` e
+longitudinea (`sapient_x_is_lon`); ediția UAP a fiecărui echipament ASTERIX; unitățile fluxurilor JSON
+ghicite. Captura PCAP nu e citită direct: se extrage întâi conținutul UDP/TCP.
 
 ## Decizii de proiectare
 
