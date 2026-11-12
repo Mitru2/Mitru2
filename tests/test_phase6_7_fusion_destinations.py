@@ -62,10 +62,10 @@ def test_destination_correct_before_halfway_in_70pct():
 def test_dunare_scenario_end_to_end():
     for seed in (1, 2, 3):
         scn = sim.dunare()
-        tr = Tracker(frame=scn.frame, posts=scn.posts)
+        tr = sim.make_tracker(scn)
         sim.run(scn, tr, sim.generate_reports(scn, seed=seed))
         confirmed = [t for t in tr.tracks.values() if t.status == "confirmat" and t.group_id is None]
-        assert len(confirmed) == 3, seed
+        assert len(confirmed) == 4, seed  # A, B, C foarte jos + D la altitudine medie
         # tinta B poarta modem mesh: traseul ei e marcat "posibil operator in bucla"
         assert sum(t.operator_in_loop for t in confirmed) == 1
         # observatorul care raporteaza doar fals nu are niciun traseu confirmat numai din rapoartele lui

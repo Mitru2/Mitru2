@@ -10,8 +10,9 @@ Totul este explicabil și reproductibil: aceleași intrări dau aceleași ieșir
 
 ```bash
 pip install -e '.[test]'
-python -m pytest                                        # 43 de teste, ~12 s
-python -m santinela.cli --scenario dunare --out out/    # scenariul „Dunăre”
+python -m pytest                                        # 63 de teste, ~20 s
+python -m santinela.cli --scenario dunare --out out/    # scenariul „Dunăre” (cu radar, detecții)
+python -m santinela.cli --scenario dunare --radar-mode tracks --out out/tr   # radarul trimite trasee
 python -m santinela.cli --scenario val --out out/val    # val dens de 12 ținte
 python -m santinela.cli --calibrate exercitiu.csv       # Faza 0 pe date reale
 ```
@@ -36,7 +37,9 @@ Harta: deschideți `viewer/index.html` și încărcați `out/cop.geojson`
 | Faza 2 – hartă: traseu netezit, elipse, con T+5/10/15, grupuri | `export.py`, `viewer/` | ✅ GeoJSON + vizualizator Leaflet |
 | Faza 3 – confirmare cu regulă și autor în jurnal | `tracker.py` | ✅ |
 | Faza 6 – fuziune de trasee prin intersecția covarianțelor; atributul „emisie mesh/4G” | `fusion.py`, `track.py` | ✅ (fără poarta SAPIENT) |
-| Scenariul de test „Dunăre” | `sim.py` | ✅ date publice, observatori fictivi |
+| Scenariul de test „Dunăre” | `sim.py` | ✅ date publice, observatori și radar fictivi |
+| Radare: detecții polare, Doppler, trasee radar prin CI, acoperire după altitudine, înregistrare | `radar.py`, `tracker.py` | ✅ |
+| Adaptor ASTERIX CAT048 | `asterix.py` | ✅ după specificația publică; **de validat pe înregistrări reale** |
 
 ### Criterii de acceptare acoperite de teste
 
@@ -49,9 +52,40 @@ Harta: deschideți `viewer/index.html` și încărcați `out/cop.geojson`
 - **Faza 3**: fiecare confirmare are regula și autorul în jurnal; un observator cu rapoarte false
   repetate nu poate confirma singur un traseu.
 - **Faza 7**: destinația corectă are probabilitatea maximă înainte de jumătatea drumului în ≥ 70% din cazuri.
-- **Scenariul „Dunăre”**: 3 ținte → exact 3 trasee confirmate (seed-urile 1–3 în teste, 1–8 verificate manual),
+- **Radar**: ASTERIX pe octeți construiți manual după specificație, Doppler (eroarea vitezei radiale
+  scade de peste 2 ori), trasee radar printr-un viraj de 90° rămân un singur traseu local, penalizarea
+  radar doar peste altitudinea minimă, înregistrarea găsește 1° / 120 m / 0,8 s pe o țintă cooperativă.
+- **Scenariul „Dunăre”**: 4 ținte → exact 4 trasee confirmate (seed-urile 1–3 în teste, 1–8 verificate manual, ambele moduri radar),
   ținta cu modem mesh marcată „posibil operator în buclă”, observatorul care raportează numai fals
   nu confirmă nimic.
+
+## Radare
+
+- **Intrare**: blocuri ASTERIX CAT048 → `Cat048Adapter` → `RadarPlot` (I048/040, opțional Doppler
+  I048/120 și înălțime I048/110 sau nivel de zbor I048/090) sau `RadarTrackReport` (I048/161 + 042 +
+  200 + 210). Radarele se identifică prin SAC/SIC; ora zilei se raportează la `tod_ref`, cu trecere
+  peste miezul nopții. Alte categorii ASTERIX din flux sunt ignorate.
+- **Detecții**: distanța oblică devine distanță la sol când se știe înălțimea; poziția și covarianța
+  se calculează prin cuadratură. Viteza radială intră în filtru ca măsurătoare neliniară (EKF).
+- **Trasee radar**: se fuzionează prin intersecția covarianțelor (erorile actualizărilor succesive
+  ale aceluiași traseu sunt corelate). Numărul de traseu al radarului e respectat: actualizările
+  lui merg la același traseu local, inclusiv la manevre.
+- **Acoperire după altitudine**: tăcerea radarului scade scorul unui traseu tentativ doar dacă ținta
+  e raportată deasupra altitudinii minime de detecție a radarului și în interiorul orizontului radar
+  (4/3 din raza Pământului). Fără altitudine raportată se presupune „foarte jos”, deci radarul nu
+  penalizează nimic — cazul Luncavița. Un raport ulterior „foarte jos” anulează retroactiv penalizarea.
+- **Încredere**: radarele și ceilalți senzori au și ei scor Beta; un radar cu verdicte false
+  repetate nu mai confirmă singur un traseu, iar densitatea lui de alarme false crește.
+- **Înregistrare** (eroare de azimut, de distanță, decalaj de ceas): cele mai mici pătrate ponderate,
+  față de o referință fără radarul calibrat. Corecția se aplică doar dacă erorile standard sunt sub
+  0,25° / 40 m / 0,5 s. Referința bună sunt țintele cooperative (`Tracker.register_radar`, ex. ADS-B);
+  cu o referință din câteva rapoarte umane estimarea e refuzată și jurnalul arată de ce.
+- **Scenariul „Dunăre”**: radarul (min. 300 m) nu vede țintele A, B, C (foarte jos) și vede ținta D
+  (Orlan-10 la 1200 m); ecourile false de păsări nu produc trasee confirmate.
+
+Rămân de verificat cu producătorul/operatorul radarului: convenția de semn pentru Doppler,
+referința înălțimii, altitudinea minimă reală din diagrama de acoperire, densitatea de alarme false.
+CAT062 (trasee de sistem) și SAPIENT nu sunt implementate.
 
 ## Decizii de proiectare
 

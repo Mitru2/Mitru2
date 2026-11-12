@@ -41,5 +41,9 @@ class FixedPost:
     active: bool = True
     pd: float = 0.7
 
+    def coverage_radius(self, altitude_floor: float | None = None) -> float:
+        """Postul fix (optic/acustic) acopera orice altitudine joasa din raza lui."""
+        return self.radius
+
     def covers(self, pos: np.ndarray) -> bool:
         return bool(np.linalg.norm(pos[:2] - self.center) <= self.radius)

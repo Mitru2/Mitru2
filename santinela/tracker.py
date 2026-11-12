@@ -16,6 +16,9 @@ from .groups import Group
 from .imm import H
 from .measurements import Measurement, Report, SensorDetection, convert_report, convert_sensor
 from .observers import ObserverRegistry
+from .imm import F_cv
+from .radar import (RadarPlot, RadarRegistration, RadarSite, RadarTrackReport, convert_plot,
+                    convert_track_report, registration_rows)
 from .sensors import FixedPost
 from .speeds import SpeedTable
 from .track import Track, NegativeEvent, TENTATIVE, CONFIRMED, DELETED
@@ -42,6 +45,7 @@ class Tracker:
     speeds: SpeedTable = field(default_factory=SpeedTable)
     observers: ObserverRegistry | None = None
     posts: list = field(default_factory=list)  # FixedPost
+    radars: list = field(default_factory=list)  # RadarSite
 
     def __post_init__(self):
         if self.observers is None:
@@ -57,6 +61,21 @@ class Tracker:
         self._n_group = 0
         self._n_merge = 0
         self.now = -math.inf
+        self.ext_map: dict[tuple, str] = {}           # (radar, nr. traseu extern) -> traseu local
+        self.registrations: dict[str, RadarRegistration] = {}
+        self._radar_by_id: dict[str, RadarSite] = {}
+        for site in self.radars:
+            self.add_radar(site)
+
+    def add_radar(self, site: RadarSite) -> RadarSite:
+        site.attach(self.frame)
+        self._radar_by_id[site.sensor_id] = site
+        self.registrations.setdefault(site.sensor_id, RadarRegistration())
+        model = self.observers.get(site.sensor_id)
+        model.civilian = False
+        if site not in self.radars:
+            self.radars.append(site)
+        return site
 
     # ------------------------------------------------------------------ util
     def _log(self, t: float, event: str, **kw) -> None:
@@ -70,6 +89,8 @@ class Tracker:
         tr = Track(tid, self.params, speed_sigma=sigma)
         tr.add(m)
         self.tracks[tid] = tr
+        if m.ext_track:
+            self.ext_map[m.ext_track] = tid
         self._log(m.t, "traseu_nou", track=tid, source=m.source_id, report=m.mid)
         return tr
 
@@ -90,7 +111,14 @@ class Tracker:
         if isinstance(item, Report):
             return convert_report(item, self.frame, self.observers.get(item.observer_id), self.params)
         if isinstance(item, SensorDetection):
-            return convert_sensor(item, self.frame)
+            return convert_sensor(item, self.frame, self.observers.get(item.sensor_id))
+        if isinstance(item, RadarPlot):
+            site = self._radar_by_id[item.sensor_id]
+            return convert_plot(item, site, self.registrations[site.sensor_id],
+                                self.observers.get(site.sensor_id), self.params)
+        if isinstance(item, RadarTrackReport):
+            site = self._radar_by_id[item.sensor_id]
+            return convert_track_report(item, site, self.observers.get(site.sensor_id), self.params)
         raise TypeError(type(item))
 
     # ------------------------------------------------------------------ porti
@@ -139,7 +167,23 @@ class Tracker:
             self._after_ingest(result)
             return result
 
-        # 2. GNN pe "scanari": rapoartele unei surse din ciclul curent. O sursa
+        # 2. continuitatea traseelor radar externe: numarul de traseu e deja decizia
+        #    de asociere a radarului, deci o actualizare a aceluiasi traseu extern
+        #    merge la acelasi traseu local cat timp acesta e activ (si la manevre,
+        #    cand poarta noastra ar respinge-o).
+        rest = []
+        for m in ms:
+            tid = self.ext_map.get(m.ext_track) if m.ext_track else None
+            tr = self.tracks.get(tid) if tid else None
+            if (tr is not None and tr.status != DELETED and tr.group_id is None
+                    and m.t - tr.last_time <= self.params.track_timeout):
+                tr.add(m)
+                result["assigned"][m.mid] = tr.track_id
+            else:
+                rest.append(m)
+        ms = rest
+
+        # 3. GNN pe "scanari": rapoartele unei surse din ciclul curent. O sursa
         #    raporteaza o drona cel mult o data pe scanare (aceeasi sursa, acelasi
         #    moment); surse sau momente diferite pot privi aceeasi drona, deci nu le
         #    punem in aceeasi atribuire unu-la-unu.
@@ -194,6 +238,8 @@ class Tracker:
                     continue
                 tr.add(m)
                 result["assigned"][m.mid] = tr.track_id
+                if m.ext_track:
+                    self.ext_map[m.ext_track] = tr.track_id
             else:
                 tr = self._new_track(m)
                 result["new"].append(tr.track_id)
@@ -240,14 +286,64 @@ class Tracker:
         """Verdict final pe traseu: actualizeaza increderea si modelul de eroare al observatorilor."""
         tr = self.tracks[track_id]
         obs_ids = sorted({m.source_id for m in tr.measurements if m.source_kind == "observer"})
-        for oid in obs_ids:
+        sensor_ids = sorted({m.source_id for m in tr.measurements if m.source_kind == "sensor"})
+        for oid in obs_ids + sensor_ids:
             self.observers.get(oid).record_verdict(true_track)
         if true_track:
             self._learn_observer_errors(tr)
+            self._learn_radar_registration(tr)
         else:
             tr.manual_status = DELETED
             tr._logged_status = DELETED
         self._log(self.now, "verdict", track=track_id, true_track=true_track, author=author, observers=obs_ids)
+
+    def _learn_radar_registration(self, tr: Track, min_ref: int = 3) -> None:
+        """Erori sistematice ale fiecarui radar din traseu, fata de traseul refacut FARA acel radar.
+
+        Excluderea radarului evita auto-referinta: traseul de referinta nu e tras spre eroarea lui.
+        Cu o referinta slaba (cateva rapoarte umane) estimarea nu trece pragul si nu se aplica.
+        """
+        for rid in sorted({m.source_id for m in tr.measurements if m.source_id in self._radar_by_id}):
+            ref_entries = [m for m in tr.measurements if m.source_id != rid]
+            plots = [m for m in tr.measurements if m.source_id == rid and isinstance(m.raw, RadarPlot)]
+            if len(ref_entries) < min_ref or not plots:
+                continue
+            ref = Track(f"{tr.track_id}-ref-{rid}", self.params, speed_sigma=tr.speed_sigma)
+            ref.entries = sorted(ref_entries, key=lambda e: e.sort_key)
+            ref.refilter()
+            times, xs, Ps = ref.smoothed()
+            triples = []
+            for m in plots:
+                t = m.raw.t
+                if t < times[0] or t > times[-1]:
+                    continue  # doar interpolare, nu extrapolare
+                k = max(i for i, tt in enumerate(times) if tt <= t)
+                F = F_cv(t - times[k])
+                triples.append((m.raw, F @ xs[k], (F @ Ps[k] @ F.T)[:2, :2]))
+            self.register_radar(rid, triples, n_ref=len(ref_entries), source=tr.track_id)
+
+    def register_radar(self, radar_id: str, triples: list, n_ref: int, source: str = "referinta") -> bool:
+        """Adauga perechi (plot, stare de referinta, covarianta) si incearca estimarea.
+
+        Referinta poate fi un traseu confirmat din alte surse sau, mai bine, tinte
+        cooperative cu pozitie cunoscuta (ADS-B, aeronave de calibrare).
+        """
+        if not triples:
+            return False
+        site = self._radar_by_id[radar_id]
+        reg = self.registrations[radar_id]
+        reg.accumulate(registration_rows(site, triples), n_ref)
+        ok = reg.solve(self.params.min_reports_own_params)
+        sig = None if reg.sigma is None else [round(math.degrees(reg.sigma[0]), 3),
+                                               round(float(reg.sigma[1]), 1), round(float(reg.sigma[2]), 3)]
+        if ok:
+            self._log(self.now, "inregistrare_radar", radar=radar_id, n=reg.n, source=source,
+                      bias_az_deg=round(math.degrees(reg.bias_az), 3), bias_range_m=round(reg.bias_range, 1),
+                      clock_offset_s=round(reg.clock_offset, 3), sigma=sig)
+        else:
+            self._log(self.now, "inregistrare_radar_insuficienta", radar=radar_id, n=reg.n, source=source,
+                      sigma=sig)
+        return ok
 
     def _learn_observer_errors(self, tr: Track) -> None:
         times, xs, _ = tr.smoothed()
@@ -331,9 +427,15 @@ class Tracker:
         for tr in self.live_tracks(now):
             if tr.status != TENTATIVE:
                 continue
-            for post in self.posts:
-                if not isinstance(post, FixedPost) or not post.active:
+            for post in list(self.posts) + list(self.radars):
+                if not isinstance(post, (FixedPost, RadarSite)) or not post.active:
                     continue
+                # raza in care postul/radarul ar fi trebuit sa vada tinta; pentru radar
+                # depinde de altitudine si e None cand tinta poate fi sub acoperire
+                radius = post.coverage_radius(tr.altitude_floor)
+                if radius is None:
+                    continue
+                min_alt = getattr(post, "min_alt", 0.0)
                 if post.post_id in tr.sources:
                     continue
                 eid = f"neg:{post.post_id}:{tr.track_id}"
@@ -342,13 +444,13 @@ class Tracker:
                 t = tr.last_time
                 hit = None
                 while t <= now:
-                    if post.covers(H @ tr.state_at(t).x):
+                    if np.linalg.norm(H @ tr.state_at(t).x - post.center) <= radius:
                         hit = t
                         break
                     t += step
                 if hit is None:
                     continue
-                tr.add(NegativeEvent(eid, post.post_id, hit, post.center.copy(), post.radius, post.pd))
+                tr.add(NegativeEvent(eid, post.post_id, hit, post.center.copy(), radius, post.pd, min_alt))
                 applied.append((tr.track_id, post.post_id))
                 self._log(hit, "informatie_negativa", track=tr.track_id, post=post.post_id,
                           score=round(tr.score, 2))

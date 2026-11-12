@@ -51,12 +51,14 @@ def test_group_mode_with_12_parallel_targets():
 
 def test_geojson_export_layers():
     scn = sim.dunare()
-    tr = Tracker(frame=scn.frame, posts=scn.posts)
-    items = sim.generate_reports(scn, seed=1)
+    tr = sim.make_tracker(scn)
+    # instantaneu la mijlocul scenariului, cand mai multe trasee sunt active
+    items = [i for i in sim.generate_reports(scn, seed=1) if i.received_at <= 1800.0]
     sim.run(scn, tr, items)
-    gj = to_geojson(tr, max(i.received_at for i in items), scn.destinations, scn.observers)
+    gj = to_geojson(tr, max(i.received_at for i in items), scn.destinations, scn.observers, radars=scn.radars)
     json.dumps(gj)  # serializabil
     layers = {f["properties"]["layer"] for f in gj["features"]}
-    assert {"traseu_netezit", "pozitie", "elipsa95", "con", "destinatii_umbra", "observator"} <= layers
+    assert {"traseu_netezit", "pozitie", "elipsa95", "con", "destinatii_umbra", "observator",
+            "radar", "acoperire_radar"} <= layers
     horizons = {f["properties"]["horizon_min"] for f in gj["features"] if f["properties"]["layer"] == "con"}
     assert horizons <= {5, 10, 15}

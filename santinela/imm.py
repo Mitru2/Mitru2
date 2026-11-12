@@ -15,6 +15,46 @@ H = np.array([[1.0, 0, 0, 0], [0, 1.0, 0, 0]])
 LOG2PI = math.log(2 * math.pi)
 
 
+class _PosOnly:
+    def __init__(self, z, R):
+        self.z, self.R = z, R
+
+
+def observation(m, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Modelul de observatie pentru o masuratoare: (z, h(x), jacobian, R).
+
+    * implicit: pozitie (x, y);
+    * ``H_full``: masuratoare liniara generala (ex. traseu radar cu viteza);
+    * ``rr``: se adauga viteza radiala fata de ``sensor_xy`` (EKF).
+    """
+    Hf = getattr(m, "H_full", None)
+    if Hf is not None:
+        zs, hs, Js, Rs = [m.z_full], [Hf @ x], [Hf], [m.R_full]
+    else:
+        zs, hs, Js, Rs = [m.z], [H @ x], [H], [m.R]
+    rr = getattr(m, "rr", None)
+    if rr is not None:
+        d = x[:2] - m.sensor_xy
+        rng = max(float(np.linalg.norm(d)), 1.0)
+        v = x[2:]
+        dv = float(d @ v)
+        zs.append(np.array([rr]))
+        hs.append(np.array([dv / rng]))
+        Js.append(np.concatenate([v / rng - dv * d / rng ** 3, d / rng])[None, :])
+        Rs.append(np.array([[m.rr_sigma ** 2]]))
+    z = np.concatenate(zs)
+    h = np.concatenate(hs)
+    J = np.vstack(Js)
+    n = len(z)
+    R = np.zeros((n, n))
+    i = 0
+    for B in Rs:
+        k = B.shape[0]
+        R[i:i + k, i:i + k] = B
+        i += k
+    return z, h, J, R
+
+
 def F_cv(dt: float) -> np.ndarray:
     F = np.eye(4)
     F[0, 2] = F[1, 3] = dt
@@ -95,28 +135,41 @@ class IMM:
         return IMMState(xs, Ps, cbar / cbar.sum(), t)
 
     def update(self, s: IMMState, z: np.ndarray, R: np.ndarray) -> tuple[IMMState, float, np.ndarray]:
-        """Actualizare; intoarce starea, log-verosimilitatea combinata si S combinat."""
+        """Actualizare cu o masuratoare de pozitie (z, R)."""
+        return self.update_m(s, _PosOnly(z, R))
+
+    def update_m(self, s: IMMState, m, omega: float | None = None) -> tuple[IMMState, float, np.ndarray]:
+        """Actualizare generala (pozitie, Doppler, masuratoare liniara 4D).
+
+        Cu ``omega`` se face fuziune prin intersectia covariantelor: predictia
+        intra cu P/omega, masuratoarea cu R/(1-omega).
+        Intoarce starea, log-verosimilitatea combinata si S-ul de pozitie combinat.
+        """
         M = len(self.qs)
         xs = np.zeros_like(s.xs)
         Ps = np.zeros_like(s.Ps)
         loglik = np.zeros(M)
         for j in range(M):
-            S = H @ s.Ps[j] @ H.T + R
-            K = s.Ps[j] @ H.T @ np.linalg.inv(S)
-            r = z - H @ s.xs[j]
+            z, h, J, R = observation(m, s.xs[j])
+            P = s.Ps[j]
+            if omega is not None:
+                P = P / omega
+                R = R / (1.0 - omega)
+            S = J @ P @ J.T + R
+            K = P @ J.T @ np.linalg.inv(S)
+            r = z - h
             xs[j] = s.xs[j] + K @ r
-            IKH = np.eye(4) - K @ H
-            Ps[j] = IKH @ s.Ps[j] @ IKH.T + K @ R @ K.T  # forma Joseph
+            IKH = np.eye(4) - K @ J
+            Ps[j] = IKH @ P @ IKH.T + K @ R @ K.T  # forma Joseph
             _, logdet = np.linalg.slogdet(S)
-            loglik[j] = -0.5 * (r @ np.linalg.solve(S, r) + logdet) - LOG2PI  # 2 dimensiuni
-        # normalizare in spatiul log
+            loglik[j] = -0.5 * (r @ np.linalg.solve(S, r) + logdet) - 0.5 * len(z) * math.log(2 * math.pi)
         lw = np.log(np.maximum(s.mu, 1e-300)) + loglik
         mx = lw.max()
         w = np.exp(lw - mx)
         total = w.sum()
         mu = w / total
         ll = float(mx + math.log(total))
-        S_comb = H @ s.P @ H.T + R
+        S_comb = H @ s.P @ H.T + m.R
         return IMMState(xs, Ps, mu, s.t), ll, S_comb
 
     def predicted_measurement(self, s: IMMState, R: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .config import Params, DEFAULT
+from .fusion import ci_weight
 from .imm import IMM, IMMState, H, rts_smooth
 from .measurements import Measurement
 
@@ -32,6 +33,7 @@ class NegativeEvent:
     center: np.ndarray
     radius: float
     pd: float
+    min_alt: float = 0.0  # > 0 pentru radar: se aplica doar daca tinta e stiut deasupra
 
     @property
     def sort_key(self) -> tuple:
@@ -50,6 +52,14 @@ class Step:
 
 
 TENTATIVE, CONFIRMED, DELETED = "tentativ", "confirmat", "sters"
+
+# Categorii de altitudine din fisa de raportare: (limita inferioara, superioara), m
+ALTITUDE_CATEGORIES = {
+    "foarte jos": (0.0, 50.0),
+    "jos": (50.0, 300.0),
+    "mediu": (300.0, 1500.0),
+    "inalt": (1500.0, 10000.0),
+}
 
 
 @dataclass
@@ -106,6 +116,22 @@ class Track:
         return sorted({m.emission for m in self.measurements if m.emission})
 
     @property
+    def altitude_floor(self) -> float | None:
+        """Limita inferioara a altitudinii tintei (m), sau None = presupunem "foarte jos".
+
+        Ipoteza cea mai defavorabila: orice raport "foarte jos" coboara limita la 0.
+        """
+        lows = []
+        for m in self.measurements:
+            if m.altitude_m is not None:
+                lows.append(max(0.0, m.altitude_m - 100.0))
+            elif m.altitude_cat:
+                lows.append(ALTITUDE_CATEGORIES.get(m.altitude_cat, (0.0, 0.0))[0])
+        if not lows:
+            return None
+        return min(lows)
+
+    @property
     def human_only(self) -> bool:
         return all(m.source_kind == "observer" for m in self.measurements)
 
@@ -135,7 +161,11 @@ class Track:
 
     def add(self, e) -> None:
         idx = self._insert(e)
-        if idx == len(self.entries) - 1 and self._ctx is not None:
+        # Un raport cu altitudine poate schimba retroactiv validitatea penalizarilor
+        # radar (min_alt), deci atunci se refiltreaza tot.
+        retro = (isinstance(e, Measurement) and (e.altitude_cat or e.altitude_m is not None)
+                 and any(isinstance(x, NegativeEvent) and x.min_alt > 0 for x in self.entries))
+        if idx == len(self.entries) - 1 and self._ctx is not None and not retro:
             # Cale rapida: intrarea e ultima in ordine. Aceleasi operatii, in aceeasi
             # ordine, ca la re-filtrarea completa -> rezultat identic bit cu bit.
             self._apply(e)
@@ -182,6 +212,10 @@ class Track:
         if isinstance(e, NegativeEvent):
             if state is None or c["status"] != TENTATIVE:
                 return
+            if e.min_alt > 0:
+                af = self.altitude_floor
+                if af is None or af < e.min_alt:
+                    return  # tinta poate fi sub acoperirea radarului
             pred = imm.predict(state, e.t) if e.t >= state.t else state
             pos = H @ pred.x
             if np.linalg.norm(pos - e.center) <= e.radius and e.post_id not in c["negs"]:
@@ -193,6 +227,10 @@ class Track:
         m: Measurement = e
         if state is None:
             state = imm.init(m.z, m.R, m.t, self.speed_sigma)
+            if m.H_full is not None and m.H_full.shape == (4, 4):
+                # traseu extern cu viteza: initializare direct din estimarea lui
+                Minit = len(state.mu)
+                state = IMMState(np.tile(m.z_full, (Minit, 1)), np.tile(m.R_full, (Minit, 1, 1)), state.mu, m.t)
             x_pred = state.x.copy()
             P_pred = state.P.copy()
             d2 = 0.0
@@ -206,7 +244,12 @@ class Track:
             # increment de scor (Blackman): ln(P_D) - ln(lambda_FA) - ln(2pi) - 0.5 ln|S| - d2/2
             c["score"] += (math.log(m.pd) - math.log(m.lambda_fa) - math.log(2 * math.pi)
                            - 0.5 * logdet - 0.5 * d2)
-            state, _, _ = imm.update(pred, m.z, m.R)
+            omega = None
+            if m.ci:
+                Jm = m.H_full if m.H_full is not None else H
+                Rm = m.R_full if m.H_full is not None else m.R
+                omega = ci_weight(P_pred, Jm, Rm)
+            state, _, _ = imm.update_m(pred, m, omega)
         c["state"] = state
         c["sources"].append(m.source_id)
         if c["status"] == TENTATIVE:
@@ -224,9 +267,11 @@ class Track:
         distinct = sorted(set(sources))
         if len(distinct) >= 2:
             return True, f"SPRT>={p.sprt_confirm:.2f} si {len(distinct)} surse independente"
-        if m.source_kind == "sensor":
-            return True, f"SPRT>={p.sprt_confirm:.2f}, senzor unic"
         trust = m.trust
+        if m.source_kind == "sensor" and trust is None:
+            return True, f"SPRT>={p.sprt_confirm:.2f}, senzor unic"
+        if m.source_kind == "sensor" and trust >= p.single_source_min_trust:
+            return True, f"SPRT>={p.sprt_confirm:.2f}, senzor unic cu incredere {trust:.2f}"
         if trust is not None and trust >= p.single_source_min_trust:
             return True, f"SPRT>={p.sprt_confirm:.2f}, sursa unica cu incredere {trust:.2f}"
         return False, ""

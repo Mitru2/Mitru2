@@ -48,6 +48,7 @@ class SensorDetection:
     pd: float = 0.9
     lambda_fa: float = 1e-10
     received_at: float | None = None
+    altitude_m: float | None = None
 
 
 @dataclass
@@ -64,6 +65,18 @@ class Measurement:
     pd: float = 0.8
     lambda_fa: float = 2.5e-9
     trust: float | None = None
+    altitude_cat: str | None = None   # "foarte jos" | "jos" | "mediu" | "inalt"
+    altitude_m: float | None = None   # inaltime masurata (radar 3D / nivel de zbor)
+    # Viteza radiala (Doppler), m/s, pozitiva cand tinta se departeaza de senzor
+    rr: float | None = None
+    rr_sigma: float | None = None
+    sensor_xy: np.ndarray | None = None
+    # Masuratoare liniara generala (ex. traseu radar 4D) si fuziune prin intersectia covariantelor
+    z_full: np.ndarray | None = None
+    R_full: np.ndarray | None = None
+    H_full: np.ndarray | None = None
+    ci: bool = False
+    ext_track: tuple | None = None    # (senzor, numar traseu extern)
     # pentru invatarea modelului de observator
     obs_xy: np.ndarray | None = None
     bearing: float | None = None
@@ -124,17 +137,39 @@ def convert_report(rep: Report, frame: LocalFrame, observer: ObserverModel,
         mid=rep.report_id, source_id=rep.observer_id, t=t, z=z, R=R,
         source_kind="observer", drone_class=rep.drone_class, emission=rep.emission,
         pd=params.pd_observer, lambda_fa=observer.lambda_fa(), trust=observer.trust,
+        altitude_cat=rep.altitude_cat,
         obs_xy=obs_xy, bearing=theta, distance=rep.distance_m, raw=rep,
     )
 
 
-def convert_sensor(det: SensorDetection, frame: LocalFrame) -> Measurement:
+def convert_sensor(det: SensorDetection, frame: LocalFrame, model: ObserverModel | None = None) -> Measurement:
+    """Detectie de pozitie. ``model`` da increderea senzorului (Beta) si scaleaza lambda_FA."""
+    lam = det.lambda_fa
+    trust = None
+    if model is not None:
+        lam = det.lambda_fa * model.lambda_fa() / model.params.lambda_fa_base
+        trust = model.trust
     return Measurement(
         mid=det.report_id, source_id=det.sensor_id, t=det.t,
         z=frame.to_xy(det.lat, det.lon), R=np.asarray(det.cov, float),
         source_kind="sensor", drone_class=det.drone_class, emission=det.emission,
-        pd=det.pd, lambda_fa=det.lambda_fa, raw=det,
+        pd=det.pd, lambda_fa=lam, trust=trust, altitude_m=det.altitude_m, raw=det,
     )
+
+
+def polar_gauss_moments(origin_xy: np.ndarray, theta: float, r: float, s_theta: float,
+                        s_r: float) -> tuple[np.ndarray, np.ndarray]:
+    """Ca :func:`_polar_moments`, dar cu distanta normala (radar), nu log-normala."""
+    th = theta + s_theta * _GH_X
+    d = r + s_r * _GH_X
+    W = np.outer(_GH_W, _GH_W)
+    X = np.outer(np.sin(th), d)
+    Y = np.outer(np.cos(th), d)
+    mx, my = float((W * X).sum()), float((W * Y).sum())
+    dx, dy = X - mx, Y - my
+    P = np.array([[(W * dx * dx).sum(), (W * dx * dy).sum()],
+                  [(W * dx * dy).sum(), (W * dy * dy).sum()]])
+    return origin_xy + np.array([mx, my]), P
 
 
 def sound_corrected_time(t_heard: float, distance_m: float, c: float = DEFAULT.speed_of_sound) -> float:

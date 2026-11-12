@@ -97,7 +97,7 @@ def test_undo_merge_restores_exact_tracks(frame):
 def test_replay_is_deterministic():
     def run():
         scn = sim.dunare()
-        t = Tracker(frame=scn.frame, posts=scn.posts)
+        t = sim.make_tracker(scn)
         sim.run(scn, t, sim.generate_reports(scn, seed=5))
         return t.snapshot(), t.journal
 

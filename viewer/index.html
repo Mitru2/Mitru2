@@ -42,10 +42,12 @@ const STYLE = {
   con: f => ({ color: '#8e44ad', weight: 1, fillOpacity: 0.05 + 0.05 * (3 - f.properties.horizon_min / 5) }),
   grup_intindere: () => ({ color: '#2c3e50', weight: 2, fillOpacity: 0.12 }),
   coridor_grup: () => ({ color: '#2c3e50', weight: 1, dashArray: '4 4', fillOpacity: 0.04 }),
+  acoperire_radar: () => ({ color: '#16a085', weight: 1, dashArray: '2 6', fillOpacity: 0.03 }),
 };
 const NAMES = { traseu_netezit: 'Traseu netezit', pozitie: 'Poziție curentă', elipsa95: 'Elipsă 95%', con: 'Con T+5/10/15',
   grup: 'Grup', grup_intindere: 'Întindere grup', coridor_grup: 'Coridor grup', ambiguu: 'Rapoarte ambigue',
-  destinatii_umbra: 'Destinații probabile (umbră)', observator: 'Observatori' };
+  destinatii_umbra: 'Destinații probabile (umbră)', observator: 'Observatori',
+  radar: 'Radare', acoperire_radar: 'Acoperire radar (peste altitudinea minimă)' };
 const groups = {};
 
 function render(gj) {
@@ -59,7 +61,7 @@ function render(gj) {
       style: STYLE[name],
       pointToLayer: (f, ll) => L.circleMarker(ll, {
         radius: name === 'observator' ? 3 : name === 'destinatii_umbra' ? 4 + 12 * (f.properties.p || 0) : 6,
-        color: name === 'observator' ? '#27ae60' : name === 'ambiguu' ? '#f1c40f' : name === 'grup' ? '#2c3e50' : name === 'destinatii_umbra' ? '#7f8c8d' : '#c0392b',
+        color: name === 'radar' ? '#16a085' : name === 'observator' ? '#27ae60' : name === 'ambiguu' ? '#f1c40f' : name === 'grup' ? '#2c3e50' : name === 'destinatii_umbra' ? '#7f8c8d' : '#c0392b',
         fillOpacity: 0.8 }),
       onEachFeature: (f, l) => l.bindPopup('<pre>' + JSON.stringify(f.properties, null, 1) + '</pre>'),
     });

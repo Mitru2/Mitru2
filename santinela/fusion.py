@@ -31,3 +31,18 @@ def covariance_intersection(xa: np.ndarray, Pa: np.ndarray, xb: np.ndarray, Pb: 
             w = cand
     x, P = fused(w)
     return x, 0.5 * (P + P.T), w
+
+
+def ci_weight(P: np.ndarray, J: np.ndarray, R: np.ndarray, lo: float = 0.05, hi: float = 0.95) -> float:
+    """Ponderea omega pentru fuziunea CI a unei stari (P) cu o estimare externa (J, R).
+
+    Minimizeaza urma covariantei fuzionate inv(omega P^-1 + (1-omega) J' R^-1 J).
+    """
+    Pi = np.linalg.inv(P)
+    I_ext = J.T @ np.linalg.inv(R) @ J
+
+    def cost(w: float) -> float:
+        return float(np.trace(np.linalg.inv(w * Pi + (1 - w) * I_ext)))
+
+    res = minimize_scalar(cost, bounds=(lo, hi), method="bounded", options={"xatol": 1e-5})
+    return float(res.x)
