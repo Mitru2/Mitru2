@@ -35,7 +35,7 @@ def _circle(frame, center, radius, n=72):
 
 
 def to_geojson(tracker, now: float, destinations: list | None = None, observers: list | None = None,
-               radars: list | None = None) -> dict:
+               radars: list | None = None, friendly: list | None = None) -> dict:
     fr = tracker.frame
     feats = []
     for tid in sorted(tracker.tracks):
@@ -50,6 +50,7 @@ def to_geojson(tracker, now: float, destinations: list | None = None, observers:
             "human_only": tr.human_only, "operator_in_loop": tr.operator_in_loop,
             "emissions": tr.emissions,
             "altitude_floor_m": tr.altitude_floor,
+            "cooperative_id": tr.cooperative_id,
             "speed_kmh": round(float(math.hypot(*tr.state.x[2:])) * 3.6),
         }
         if len(xs) > 1:
@@ -89,6 +90,10 @@ def to_geojson(tracker, now: float, destinations: list | None = None, observers:
     for ob in observers or []:
         feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [ob.lon, ob.lat]},
                       "properties": {"layer": "observator", "id": ob.observer_id}})
+    for fp in friendly or []:
+        feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [fp.lon, fp.lat]},
+                      "properties": {"layer": "echipe", "id": fp.unit_id, "name": fp.name, "symbol": fp.symbol,
+                                     "source": fp.source}})
     for site in (radars if radars is not None else getattr(tracker, "radars", [])):
         feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [site.lon, site.lat]},
                       "properties": {"layer": "radar", "id": site.sensor_id, "min_alt_m": site.min_alt,

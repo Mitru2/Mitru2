@@ -81,7 +81,38 @@ UAP021 = {
     47: ("-", "spare", None), 48: ("RE", "explicit", None), 49: ("SP", "explicit", None),
 }
 
-UAPS = {48: UAP048, 62: UAP062, 21: UAP021}
+# CAT001 (radar monoradar, format vechi inca folosit de radare militare): doua UAP-uri,
+# alese dupa bitul TYP din I001/020 (0 = plot, 1 = traseu).
+UAP001_PLOT = {
+    1: ("010", "fixed", 2), 2: ("020", "var", None), 3: ("040", "fixed", 4), 4: ("070", "fixed", 2),
+    5: ("090", "fixed", 2), 6: ("130", "var", None), 7: ("141", "fixed", 2),
+    8: ("050", "fixed", 2), 9: ("120", "fixed", 1), 10: ("131", "fixed", 1), 11: ("080", "fixed", 2),
+    12: ("100", "fixed", 4), 13: ("060", "fixed", 2), 14: ("030", "var", None),
+    15: ("150", "fixed", 1), 16: ("-", "spare", None), 17: ("-", "spare", None), 18: ("-", "spare", None),
+    19: ("-", "spare", None), 20: ("SP", "explicit", None), 21: ("RFS", "rfs", None),
+}
+UAP001_TRACK = {
+    1: ("010", "fixed", 2), 2: ("020", "var", None), 3: ("161", "fixed", 2), 4: ("040", "fixed", 4),
+    5: ("042", "fixed", 4), 6: ("200", "fixed", 4), 7: ("070", "fixed", 2),
+    8: ("090", "fixed", 2), 9: ("141", "fixed", 2), 10: ("130", "var", None), 11: ("131", "fixed", 1),
+    12: ("120", "fixed", 1), 13: ("170", "var", None), 14: ("210", "var", None),
+    15: ("050", "fixed", 2), 16: ("080", "fixed", 2), 17: ("100", "fixed", 4), 18: ("060", "fixed", 2),
+    19: ("030", "var", None), 20: ("SP", "explicit", None), 21: ("RFS", "rfs", None),
+}
+UAP002 = {
+    1: ("010", "fixed", 2), 2: ("000", "fixed", 1), 3: ("020", "fixed", 1), 4: ("030", "fixed", 3),
+    5: ("041", "fixed", 2), 6: ("050", "var", None), 7: ("060", "var", None),
+    8: ("070", "rep", 2), 9: ("100", "fixed", 8), 10: ("090", "fixed", 2), 11: ("080", "var", None),
+    12: ("-", "spare", None), 13: ("SP", "explicit", None), 14: ("RFS", "rfs", None),
+}
+UAP034 = {
+    1: ("010", "fixed", 2), 2: ("000", "fixed", 1), 3: ("030", "fixed", 3), 4: ("020", "fixed", 1),
+    5: ("041", "fixed", 2), 6: ("050", "compound", [1, 0, 0, 1, 1, 2]), 7: ("060", "compound", [1, 0, 0, 1, 1, 1]),
+    8: ("070", "rep", 2), 9: ("100", "fixed", 8), 10: ("110", "fixed", 1), 11: ("120", "fixed", 8),
+    12: ("090", "fixed", 2), 13: ("RE", "explicit", None), 14: ("SP", "explicit", None),
+}
+
+UAPS = {48: UAP048, 62: UAP062, 21: UAP021, 1: UAP001_PLOT, 2: UAP002, 34: UAP034}
 UAP = UAP048  # compatibilitate
 ITEM_FRN = {48: {v[0]: k for k, v in UAP048.items()},
             62: {v[0]: k for k, v in UAP062.items() if v[0] != "-"},
@@ -149,6 +180,8 @@ def _item_length(buf: bytes, i: int, kind: str, n) -> int:
         return k - i
     if kind == "spare":
         raise AsterixError("FRN de rezerva prezent in FSPEC")
+    if kind == "rfs":
+        raise AsterixError("secventierea aleatoare a campurilor (RFS) nu e suportata")
     raise AsterixError(kind)
 
 
@@ -287,7 +320,54 @@ def _i021(item: str, d: bytes) -> dict:
     return {}
 
 
-INTERPRETERS = {48: _i048, 62: _i062, 21: _i021}
+def _i001(item: str, d: bytes) -> dict:
+    if item == "010":
+        return {"sac": d[0], "sic": d[1]}
+    if item == "020":
+        det = (d[0] >> 4) & 0x03  # 01 PSR, 10 SSR, 11 PSR+SSR
+        return {"is_track": bool(d[0] & 0x80), "sim": bool(d[0] & 0x40),
+                "typ": {0: 0, 1: 1, 2: 2, 3: 3}[det]}
+    if item == "040":
+        rho, theta = struct.unpack(">HH", d)
+        return {"range_m": rho / 128.0 * NM, "azimuth_deg": theta * 360.0 / 65536.0}
+    if item == "042":
+        x, y = struct.unpack(">hh", d)
+        return {"x_m": x / 64.0 * NM, "y_m": y / 64.0 * NM}
+    if item == "200":
+        gs, hdg = struct.unpack(">HH", d)
+        return {"groundspeed_mps": gs * 2 ** -14 * NM, "heading_deg": hdg * 360.0 / 65536.0}
+    if item == "161":
+        return {"track_number": struct.unpack(">H", d)[0] & 0x0FFF}
+    if item == "141":
+        return {"tod_trunc": struct.unpack(">H", d)[0] / 128.0}
+    if item == "120":
+        return {"doppler_mps": _signed(d[0], 8) * 2 ** -14 * NM, "doppler_valid": True}
+    if item == "090":
+        v = struct.unpack(">H", d)[0]
+        fl = _signed(v & 0x3FFF, 14) / 4.0
+        return {"fl": fl, "fl_alt_m": fl * 100.0 * FT, "fl_valid": not (v & 0x8000)}
+    if item == "170":
+        return {"track_confirmed": not (d[0] & 0x80)}
+    return {}
+
+
+def _i_service(item: str, d: bytes) -> dict:
+    """CAT002 / CAT034: mesaje de serviciu (marcaj nord, sector, pozitia sursei)."""
+    if item == "010":
+        return {"sac": d[0], "sic": d[1]}
+    if item == "000":
+        return {"msg_type": d[0]}
+    if item == "030":
+        return {"tod": int.from_bytes(d, "big") / 128.0}
+    if item == "041":
+        return {"rotation_s": struct.unpack(">H", d)[0] / 128.0}
+    if item == "120":  # I034/120: pozitia 3D a sursei
+        return {"site_height_m": _sbytes(d[:2]), "site_lat": _sbytes(d[2:5]) * 180.0 / 2 ** 23,
+                "site_lon": _sbytes(d[5:8]) * 180.0 / 2 ** 23}
+    return {}
+
+
+INTERPRETERS = {48: _i048, 62: _i062, 21: _i021, 1: _i001, 2: _i_service, 34: _i_service}
 
 
 # ------------------------------------------------------------------ decodare
@@ -321,14 +401,19 @@ def decode_block(block: bytes) -> tuple[int, list[dict]]:
     cat = block[0]
     if cat not in UAPS:
         return cat, []
-    uap, interp = UAPS[cat], INTERPRETERS[cat]
+    interp = INTERPRETERS[cat]
     i, end = 3, len(block)
     out = []
     while i < end:
+        uap = UAPS[cat]
         fs_end = _read_var(block, i)
         fspec = block[i:fs_end]
         i = fs_end
         rec: dict = {"cat": cat, "items": []}
+        if cat == 1 and fspec[0] & 0x40:
+            # CAT001: UAP-ul depinde de I001/020 (FRN 2); il citim inainte
+            j = i + (2 if fspec[0] & 0x80 else 0)
+            uap = UAP001_TRACK if block[j] & 0x80 else UAP001_PLOT
         for byte_idx, b in enumerate(fspec):
             for bit in range(7):
                 if b & (0x80 >> bit):

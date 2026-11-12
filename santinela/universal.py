@@ -32,7 +32,16 @@ from pathlib import Path
 
 import numpy as np
 
+from . import cot as cotmod
+from . import nffi as nffimod
+from . import remoteid as ridmod
+from . import stanag4607
 from .asterix import (AsterixError, Cat048Adapter, decode_block, iter_blocks, looks_like_asterix, tod_to_t)
+from .cot import looks_like_cot
+from .nffi import FriendlyPosition, looks_like_nffi
+from .protowire import ProtoError, ProtoSchema
+from .remoteid import looks_like_remoteid
+from .stanag4607 import Stanag4607Error, looks_like_4607
 from .geo import LocalFrame
 from .measurements import SensorDetection, polar_gauss_moments
 from .radar import RadarPlot, RadarSite, RadarTrackReport
@@ -76,15 +85,35 @@ class SourceStatus:
 
 
 # ------------------------------------------------------------------ utilitare
+# Standarde cu distributie controlata: recunoscute prin declararea sursei, decodate
+# doar printr-un modul suplimentar scris in mediul acreditat dupa specificatia oficiala.
+CONTROLLED_STANDARDS = {
+    "link16": "Link 16 (STANAG 5516 / MIL-STD-6016, mesaje J)",
+    "jreap": "JREAP-A/B/C (STANAG 5518 / MIL-STD-3011)",
+    "link11": "Link 11 (STANAG 5511)",
+    "link22": "Link 22 (STANAG 5522)",
+    "vmf": "VMF (MIL-STD-6017)",
+    "othgold": "OTH-Gold",
+    "adatp3": "ADatP-3 (STANAG 5500)",
+}
+
+
 def detect_format(data) -> str:
-    """'asterix' | 'nmea' | 'sapient-json' | 'sapient-protobuf' | 'sapient-xml' | 'json' | 'necunoscut'."""
+    """Formatul unui mesaj.
+
+    'asterix' | 'stanag4607' | 'remoteid' | 'nmea' | 'cot' | 'nffi' | 'sapient-json' |
+    'sapient-protobuf' | 'sapient-xml' | 'json' | 'necunoscut'.
+    """
     if isinstance(data, (bytes, bytearray)):
         if looks_like_asterix(data):
             return "asterix"
-        n = len(data)
-        # SAPIENT pe TCP: antet de 4 octeti cu lungimea mesajului protobuf
-        if n > 4 and (int.from_bytes(data[:4], "little") == n - 4 or int.from_bytes(data[:4], "big") == n - 4):
+        if looks_like_4607(data):
+            return "stanag4607"
+        # SAPIENT pe TCP: fiecare mesaj protobuf precedat de 4 octeti cu lungimea lui
+        if _length_framed(bytes(data), "little") or _length_framed(bytes(data), "big"):
             return "sapient-protobuf"
+        if looks_like_remoteid(data):
+            return "remoteid"
         try:
             text = bytes(data).decode("utf-8")
         except UnicodeDecodeError:
@@ -99,6 +128,10 @@ def detect_format(data) -> str:
     if s.startswith(("$", "!")):
         return "nmea"
     if s.startswith("<"):
+        if looks_like_cot(s):
+            return "cot"
+        if looks_like_nffi(s):
+            return "nffi"
         return "sapient-xml" if re.search(r"DetectionReport|SensorRegistration|StatusReport", s) else "necunoscut"
     if s.startswith(("{", "[")):
         objs = _json_objects(s)
@@ -106,6 +139,21 @@ def detect_format(data) -> str:
             return "necunoscut"
         return "sapient-json" if any(_is_sapient(o) for o in objs) else "json"
     return "necunoscut"
+
+
+def _length_framed(data: bytes, order: str) -> bool:
+    """Bufferul e un lant exact de cadre [lungime pe 4 octeti][mesaj]?"""
+    i, n = 0, len(data)
+    if n <= 4:
+        return False
+    while i < n:
+        if i + 4 > n:
+            return False
+        ln = int.from_bytes(data[i:i + 4], order)
+        if ln == 0 or i + 4 + ln > n:
+            return False
+        i += 4 + ln
+    return True
 
 
 _SAPIENT_KEYS = {"detectionReport", "detection_report", "statusReport", "status_report", "registration",
@@ -306,6 +354,8 @@ class UniversalAdapter:
     json_profiles: list = field(default_factory=list)  # JsonProfile
     tracker: object = None                              # daca e dat, sursele noi se inregistreaza in el
     sapient_decoder: object = None                      # callable(bytes) -> dict (forma JSON)
+    sapient_proto_dir: str | None = None                # definitiile oficiale .proto (BSI Flex 335 v2)
+    sapient_root_message: str = "SapientMessage"
     sapient_x_is_lon: bool = True                       # Location.x = longitudine (de confirmat pe ICD)
     drop_non_drone_classes: tuple = ("bird", "pasare", "human", "person", "vehicle", "car")
     min_class_confidence: float = 0.8
@@ -323,6 +373,14 @@ class UniversalAdapter:
         self._cat048 = Cat048Adapter([], tod_ref=self.tod_ref, mode=self.cat048_mode)
         self._adsb = defaultdict(list)    # icao -> [CooperativeReport]
         self._pending_pairs = defaultdict(list)
+        self.friendly: dict[str, FriendlyPosition] = {}   # pozitii de echipe (NFFI, CoT prieten)
+        self._plugins: dict[str, dict] = {}             # nume -> {"decode": f, "detect": f}
+        self._declared: dict[str, str] = {}             # sursa -> format declarat
+        self._last_full_tod: dict = {}                  # (sac, sic) -> ultima ora completa (CAT002/034)
+        if self.sapient_decoder is None and self.sapient_proto_dir:
+            schema = ProtoSchema.from_dir(self.sapient_proto_dir)
+            root = self.sapient_root_message
+            self.sapient_decoder = lambda b: schema.decode(root, b)
         for s in list(self.sites):
             self.add_site(s)
 
@@ -364,6 +422,18 @@ class UniversalAdapter:
         status.need("acoperirea si altitudinea minima de detectie (pentru informatie negativa)")
         status.need("precizia declarata (sigma pozitie/viteza) si rata de alarme false")
         return site
+
+    def register_decoder(self, name: str, decode, detect=None) -> None:
+        """Modul suplimentar pentru un format (ex. Link 16 in mediul acreditat).
+
+        ``decode(data, received_at, source)`` intoarce intrari pentru tracker (RadarTrackReport,
+        SensorDetection, RadarPlot); ``detect(data) -> bool`` optional, pentru recunoastere automata.
+        """
+        self._plugins[name] = {"decode": decode, "detect": detect}
+
+    def declare_source(self, source: str, fmt: str) -> None:
+        """Formatul unei surse, cand nu se poate recunoaste din continut (ex. legaturi de date tactice)."""
+        self._declared[source] = fmt
 
     def _status(self, key: str, fmt: str) -> SourceStatus:
         if key not in self.sources:
@@ -411,10 +481,36 @@ class UniversalAdapter:
     # ---------- intrare ----------
     def feed(self, data, received_at: float | None = None, source: str | None = None) -> list:
         """Un mesaj (sau un lot) de orice format; intoarce intrarile pentru tracker."""
-        fmt = detect_format(data)
+        fmt = self._declared.get(source) if source else None
+        if fmt is None:
+            fmt = next((n for n, p in self._plugins.items() if p["detect"] and p["detect"](data)), None)
+        if fmt is None:
+            fmt = detect_format(data)
         self.stats[fmt] += 1
         try:
-            if fmt == "asterix":
+            if fmt in self._plugins:
+                st = self._status(source or fmt, fmt)
+                out = list(self._plugins[fmt]["decode"](data, received_at, source))
+                for item in out:
+                    self._ensure_site_for(item, st)
+                st.accepted += len(out)
+            elif fmt in CONTROLLED_STANDARDS:
+                st = self._status(source or fmt, fmt)
+                st.need(f"decodor pentru {CONTROLLED_STANDARDS[fmt]}: specificatia are distributie controlata; "
+                        "se implementeaza in mediul acreditat si se inregistreaza cu register_decoder()")
+                out = []
+            elif fmt == "stanag4607":
+                out = self._gmti(bytes(data), received_at)
+            elif fmt == "remoteid":
+                out = self._remoteid(bytes(data), received_at, source or "RemoteID")
+            elif fmt == "cot":
+                out = self._cot(data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data,
+                                received_at, source or "CoT")
+            elif fmt == "nffi":
+                self._nffi(data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data,
+                           source or "NFFI")
+                out = []
+            elif fmt == "asterix":
                 out = self._asterix(bytes(data), received_at)
             elif fmt == "nmea":
                 out = self._nmea(data.decode("ascii", "replace") if isinstance(data, (bytes, bytearray)) else data,
@@ -424,11 +520,10 @@ class UniversalAdapter:
             elif fmt == "sapient-protobuf":
                 if self.sapient_decoder is None:
                     st = self._status(source or "SAPIENT-binar", fmt)
-                    st.need("decodorul protobuf SAPIENT (definitiile BSI Flex 335 + pachetul protobuf), "
-                            "dat ca sapient_decoder")
+                    st.need("definitiile oficiale SAPIENT .proto (BSI Flex 335 v2): sapient_proto_dir=<director>")
                     out = []
                 else:
-                    out = self._sapient([self.sapient_decoder(bytes(data[4:]))], received_at)
+                    out = self._sapient(self._sapient_frames(bytes(data)), received_at)
             elif fmt == "sapient-xml":
                 st = self._status(source or "SAPIENT-XML", fmt)
                 st.need("convertor pentru SAPIENT XML (versiunea veche, v6); cereti producatorului BSI Flex 335 v2")
@@ -439,7 +534,7 @@ class UniversalAdapter:
                 st = self._status(source or "necunoscut", fmt)
                 st.need("formatul nu a fost recunoscut: trimiteti un exemplu si documentul de interfata (ICD)")
                 out = []
-        except (AsterixError, ValueError, KeyError, TypeError) as e:
+        except (AsterixError, Stanag4607Error, ProtoError, ValueError, KeyError, TypeError) as e:
             self.errors.append((fmt, str(e)))
             out = []
         self._run_registration()
@@ -447,12 +542,12 @@ class UniversalAdapter:
 
     def feed_file(self, path: str | Path, received_at: float | None = None, source: str | None = None) -> list:
         raw = Path(path).read_bytes()
-        if looks_like_asterix(raw):
+        if detect_format(raw) in ("asterix", "stanag4607", "remoteid", "sapient-protobuf"):
             return self.feed(raw, received_at, source)
         text = raw.decode("utf-8", "replace")
         fmt = detect_format(text)
         source = source or Path(path).stem  # NMEA nu are id de senzor: numele fisierului
-        if fmt in ("nmea",):
+        if fmt in ("nmea", "cot", "nffi", "sapient-xml"):
             return self.feed(text, received_at, source)
         out = []
         for line in text.splitlines():
@@ -471,6 +566,9 @@ class UniversalAdapter:
     def _asterix(self, buf: bytes, received_at) -> list:
         out = []
         for cat, blk in iter_blocks(buf):
+            if cat in (1, 2, 34):
+                out.extend(self._legacy_asterix(cat, blk, received_at))
+                continue
             if cat not in (48, 62, 21):
                 st = self._status(f"CAT{cat:03d}", "asterix")
                 st.note("categorie recunoscuta, nefolosita de tracker (ignorata)")
@@ -485,6 +583,44 @@ class UniversalAdapter:
                     out.extend(self._cat062_rec(rec, st, received_at, key))
                 else:
                     self._cat021_rec(rec, st, key)
+        return out
+
+    def _legacy_asterix(self, cat: int, blk: bytes, received_at) -> list:
+        """CAT002/034 (serviciu: ora, pozitia radarului) si CAT001 (plot-uri/trasee vechi)."""
+        out = []
+        _, recs = decode_block(blk)
+        for rec in recs:
+            key = f"SAC{rec.get('sac')}/SIC{rec.get('sic')}"
+            st = self._status(key, f"asterix CAT{cat:03d}")
+            sid = (rec.get("sac"), rec.get("sic"))
+            if cat in (2, 34):
+                if "tod" in rec:
+                    self._last_full_tod[sid] = rec["tod"]
+                if "site_lat" in rec and sid not in self._by_asterix:
+                    site = RadarSite(f"R-{sid[0]}-{sid[1]}", rec["site_lat"], rec["site_lon"],
+                                     antenna_height=max(float(rec["site_height_m"]), 0.0), sac=sid[0], sic=sid[1],
+                                     negative_info=False)
+                    self.add_site(site)
+                    st.site = site.sensor_id
+                    st.note("pozitia radarului invatata din I034/120")
+                    st.need("acoperirea si altitudinea minima de detectie (pentru informatie negativa)")
+                continue
+            # CAT001: ora trunchiata (I001/141, perioada 512 s) se completeaza cu ultima ora
+            # completa din CAT002/034 sau cu ora de sosire
+            if "tod_trunc" not in rec:
+                continue
+            base = self._last_full_tod.get(sid)
+            if base is None:
+                if received_at is None:
+                    st.need("ora completa: mesaje CAT002/CAT034 de la acelasi radar sau ora de sosire")
+                    continue
+                base = (self.tod_ref + received_at) % 86400.0
+                st.note("ora CAT001 completata din ora de sosire (lipsesc CAT002/034)")
+            k = round((base - rec["tod_trunc"]) / 512.0)
+            rec["tod"] = (rec["tod_trunc"] + 512.0 * k) % 86400.0
+            if rec.get("is_track"):
+                rec.setdefault("track_number", 0)
+            out.extend(self._cat048_rec(rec, st, received_at))
         return out
 
     def _cat048_rec(self, rec, st, received_at) -> list:
@@ -601,6 +737,154 @@ class UniversalAdapter:
     def flush_registration(self) -> None:
         """La sfarsitul unei inregistrari: foloseste si perechile ramase."""
         self._run_registration(batch=1)
+
+    def _ensure_site_for(self, item, st) -> None:
+        """Sursele din module suplimentare cu pozitii absolute primesc automat un senzor."""
+        sid = getattr(item, "sensor_id", None)
+        if sid and sid not in self._by_name:
+            lat = getattr(item, "lat", None)
+            lon = getattr(item, "lon", None)
+            if lat is None:
+                st.need(f"pozitia senzorului {sid} (configurare)")
+                return
+            self._auto_site(sid, lat, lon, "senzor", st)
+
+    def _sapient_frames(self, data: bytes) -> list:
+        """Mesaje SAPIENT binare, fiecare precedat de 4 octeti de lungime (little-endian implicit)."""
+        order = "little" if _length_framed(data, "little") else "big"
+        out, i = [], 0
+        while i + 4 <= len(data):
+            n = int.from_bytes(data[i:i + 4], order)
+            out.append(self.sapient_decoder(data[i + 4:i + 4 + n]))
+            i += 4 + n
+        return out
+
+    # ---------- STANAG 4607 (GMTI) ----------
+    def _gmti(self, buf: bytes, received_at) -> list:
+        out = []
+        for dw in stanag4607.decode(buf):
+            key = f"4607:{dw.platform_id or 'necunoscut'}"
+            st = self._status(key, "stanag4607")
+            st.site = key
+            st.note("STANAG 4607: confirmati semnul vitezei pe linia de vizare (pozitiv = departare)")
+            if dw.exercise:
+                st.note("pachete marcate EXERCITIU")
+            f = dw.fields
+            if key not in self._by_name:
+                self._auto_site(key, f["sensor_lat"], f["sensor_lon"], "radar", st)
+            site = self._by_name[key]
+            t = round(tod_to_t(dw.tod, self.tod_ref), 4)
+            s_xy = self.frame.to_xy(f["sensor_lat"], f["sensor_lon"])
+            for k, tg in enumerate(dw.targets):
+                if "lat" not in tg:
+                    continue
+                p = self.frame.to_xy(tg["lat"], tg["lon"])
+                los = p - s_xy
+                rng = float(np.linalg.norm(los)) or 1.0
+                u = los / rng
+                s_r = tg.get("slant_range_unc_cm", 0) / 100.0 or site.sigma_range
+                s_c = tg.get("cross_range_unc_dm", 0) / 10.0 or rng * math.radians(site.sigma_az_deg)
+                w = np.array([-u[1], u[0]])
+                R = np.outer(u, u) * s_r ** 2 + np.outer(w, w) * s_c ** 2
+                rr = tg.get("los_velocity_cms")
+                cls = tg.get("classification")
+                out.append(SensorDetection(
+                    f"{key}:{dw.fields.get('revisit_index', 0):.0f}:{dw.fields.get('dwell_index', 0):.0f}:{k}",
+                    key, t, tg["lat"], tg["lon"], R,
+                    drone_class=None if cls is None else stanag4607.CLASSIFICATION.get(int(cls)),
+                    pd=site.pd, lambda_fa=site.lambda_fa, received_at=received_at,
+                    altitude_m=tg.get("height_m"), rr=None if rr is None else rr / 100.0,
+                    rr_sigma=(tg.get("los_velocity_unc_cms", 0) / 100.0) or 1.0,
+                    sensor_lat=f["sensor_lat"], sensor_lon=f["sensor_lon"]))
+                st.accepted += 1
+        return out
+
+    # ---------- Remote ID ----------
+    def _remoteid(self, buf: bytes, received_at, source) -> list:
+        st = self._status(source, "remoteid")
+        st.site = source
+        approx = (self.tod_ref + (received_at or 0.0)) % 86400.0
+        for loc in ridmod.decode(buf):
+            if loc.ts_tenths_hour is None:
+                tod = approx
+            else:
+                tod = ridmod.tod_from_tenths(loc.ts_tenths_hour, approx)
+            vx = vy = None
+            if loc.speed is not None and loc.direction is not None:
+                h = math.radians(loc.direction)
+                vx, vy = loc.speed * math.sin(h), loc.speed * math.cos(h)
+            self._add_coop(CooperativeReport(loc.uas_id or f"RID-{source}", round(tod_to_t(tod, self.tod_ref), 4),
+                                             loc.lat, loc.lon, loc.alt_geo, vx, vy, source="RemoteID"))
+            st.accepted += 1
+        st.note("drone cooperative (Remote ID): marcheaza traseele potrivite, nu intra ca tinte")
+        return []
+
+    # ---------- Cursor-on-Target ----------
+    def _cot(self, text: str, received_at, source) -> list:
+        out = []
+        st = self._status(source, "cot")
+        for ev in cotmod.parse(text):
+            tod = parse_time_tod(ev.time) if ev.time else None
+            t = round(tod_to_t(tod, self.tod_ref), 4) if tod is not None else received_at
+            role = ev.role
+            if role == "prieten":
+                self.friendly[ev.uid] = FriendlyPosition(ev.uid, tod, ev.lat, ev.lon, ev.hae, ev.callsign,
+                                                         ev.type, source="CoT")
+                continue
+            if role == "cooperativ":
+                self._add_coop(CooperativeReport(ev.uid, t, ev.lat, ev.lon, ev.hae, source="CoT"))
+                continue
+            if role != "tinta":
+                st.note(f"tipul {ev.type} ignorat (nu e tinta aeriana sau forta proprie)")
+                continue
+            if t is None:
+                st.need("atributul time in evenimentele CoT")
+                continue
+            if source not in self._by_name:
+                self._auto_site(source, ev.lat, ev.lon, "senzor", st)
+            site = self._by_name[source]
+            st.site = source
+            p = self.frame.to_xy(ev.lat, ev.lon) - site.center
+            ce = ev.ce if ev.ce is not None and ev.ce < cotmod.UNKNOWN_ERR else None
+            if ce is None:
+                st.note("ce necunoscut: precizia pozitiei CoT e presupusa (100 m)")
+            s = max(ce or 100.0, 10.0)
+            vx = vy = None
+            cov = np.eye(2) * s * s
+            if ev.speed is not None and ev.course is not None:
+                h = math.radians(ev.course)
+                vx, vy = ev.speed * math.sin(h), ev.speed * math.cos(h)
+                cov = np.diag([s * s, s * s, 5.0 ** 2, 5.0 ** 2])
+            if ev.how.startswith("h"):
+                st.note("evenimente introduse de om (how=h-*): tratate ca rapoarte, cu precizia din ce")
+            out.append(RadarTrackReport(f"{source}:{ev.uid}:{ev.time}", site.sensor_id, _stable_int(ev.uid), t,
+                                        float(p[0]), float(p[1]), vx, vy, cov, ev.hae, True,
+                                        received_at=received_at))
+            st.accepted += 1
+        return out
+
+    # ---------- NFFI ----------
+    def _nffi(self, text: str, source) -> None:
+        st = self._status(source, "nffi")
+        for fp in nffimod.parse(text, source):
+            self.friendly[fp.unit_id] = fp
+            st.accepted += 1
+        st.note("pozitii ale fortelor proprii (echipe); nu intra in trackerul de drone")
+
+    # ---------- marcarea traseelor cooperative ----------
+    def annotate_tracks(self, tracker, max_dist: float = 300.0, max_dt: float = 10.0) -> dict:
+        """Traseele care se suprapun cu o drona/aeronava cooperativa primesc identitatea ei."""
+        found = {}
+        for tr in tracker.live_tracks(tracker.now):
+            for c in reversed(self.cooperative):
+                if abs(c.t - tr.last_time) > max_dt:
+                    continue
+                pos = tr.state_at(c.t).x[:2]
+                if np.linalg.norm(pos - self.frame.to_xy(c.lat, c.lon)) <= max_dist:
+                    tr.cooperative_id = f"{c.source}:{c.icao}"
+                    found[tr.track_id] = tr.cooperative_id
+                    break
+        return found
 
     # ---------- NMEA ----------
     def _nmea(self, text: str, received_at, source: str) -> list:

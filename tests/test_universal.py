@@ -115,10 +115,10 @@ def test_cat021_adsb_goes_to_cooperative_not_tracker():
 
 
 def test_other_asterix_categories_are_recognised_and_ignored():
-    cat34 = bytes([34, 0, 6, 0x80, 1, 7])
+    cat240 = bytes([240, 0, 6, 0x80, 1, 7])  # video radar: recunoscut, nefolosit
     ad = UniversalAdapter(frame=FR)
-    assert ad.feed(cat34) == []
-    assert "CAT034" in ad.sources and not ad.requirements()
+    assert ad.feed(cat240) == []
+    assert "CAT240" in ad.sources and not ad.requirements()
 
 
 def test_cat048_unknown_radar_needs_position():

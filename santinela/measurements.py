@@ -49,6 +49,11 @@ class SensorDetection:
     lambda_fa: float = 1e-10
     received_at: float | None = None
     altitude_m: float | None = None
+    # Viteza radiala optionala (ex. GMTI STANAG 4607), fata de pozitia senzorului la detectie
+    rr: float | None = None
+    rr_sigma: float | None = None
+    sensor_lat: float | None = None
+    sensor_lon: float | None = None
 
 
 @dataclass
@@ -154,6 +159,9 @@ def convert_sensor(det: SensorDetection, frame: LocalFrame, model: ObserverModel
         z=frame.to_xy(det.lat, det.lon), R=np.asarray(det.cov, float),
         source_kind="sensor", drone_class=det.drone_class, emission=det.emission,
         pd=det.pd, lambda_fa=lam, trust=trust, altitude_m=det.altitude_m, raw=det,
+        rr=det.rr if det.sensor_lat is not None else None,
+        rr_sigma=(det.rr_sigma or 1.0) if det.rr is not None else None,
+        sensor_xy=frame.to_xy(det.sensor_lat, det.sensor_lon) if det.sensor_lat is not None else None,
     )
 
 

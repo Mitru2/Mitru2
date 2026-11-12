@@ -18,6 +18,10 @@ from .speeds import speed_table_from_site
 from .track import CONFIRMED
 
 
+def conf_all(tr):
+    return [t for tid, t in sorted(tr.tracks.items()) if t.status == CONFIRMED and t.group_id is None]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="santinela")
     ap.add_argument("--scenario", choices=["dunare", "val"], default="dunare")
@@ -64,6 +68,12 @@ def main(argv: list[str] | None = None) -> int:
     sim.run(scn, tr, items)
     now = max(i.received_at for i in items)
     p = write(tr, now, a.out, scn.destinations, scn.observers, scn.radars)
+    # traseele confirmate si ca evenimente Cursor-on-Target, pentru TAK/ATAK
+    from pathlib import Path
+    from .cot import track_to_cot, utc_from_tod
+    utc = utc_from_tod(scn.tod_ref + now)
+    events = [track_to_cot(t, tr.frame, utc) for t in conf_all(tr)]
+    (Path(a.out) / "cot.xml").write_text("\n".join(events), encoding="utf-8")
 
     conf = [t for t in tr.tracks.values() if t.status == CONFIRMED and t.group_id is None]
     print(f"Scenariu: {scn.name} | rapoarte: {len(items)} | trasee: {len(tr.tracks)} "

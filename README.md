@@ -10,7 +10,7 @@ Totul este explicabil și reproductibil: aceleași intrări dau aceleași ieșir
 
 ```bash
 pip install -e '.[test]'
-python -m pytest                                        # 84 de teste, ~20 s
+python -m pytest                                        # 97 de teste, ~20 s
 python -m santinela.cli --scenario dunare --out out/    # scenariul „Dunăre” (cu radar, detecții)
 python -m santinela.cli --scenario dunare --radar-mode tracks --out out/tr   # radarul trimite trasee
 python -m santinela.cli --scenario val --out out/val    # val dens de 12 ținte
@@ -41,7 +41,7 @@ Harta: deschideți `viewer/index.html` și încărcați `out/cop.geojson`
 | Scenariul de test „Dunăre” | `sim.py` | ✅ date publice, observatori și radar fictivi |
 | Radare: detecții polare, Doppler, trasee radar prin CI, acoperire după altitudine, înregistrare | `radar.py`, `tracker.py` | ✅ |
 | Adaptor ASTERIX CAT048 / CAT062 / CAT021 | `asterix.py` | ✅ după specificația publică; **de validat pe înregistrări reale** |
-| Adaptor universal (ASTERIX, SAPIENT JSON, NMEA, JSON de producător), cu detectarea formatului | `universal.py` | ✅ |
+| Adaptor universal (ASTERIX, SAPIENT, STANAG 4607, CoT, NFFI, Remote ID, NMEA, JSON), cu detectarea formatului | `universal.py` | ✅ |
 
 ### Criterii de acceptare acoperite de teste
 
@@ -117,6 +117,30 @@ Un singur punct de intrare pentru toate sursele: `UniversalAdapter.feed(mesaj)` 
 Nesigur, de confirmat pe documentul de interfață al fiecărei surse: în SAPIENT, `Location.x` e
 longitudinea (`sapient_x_is_lon`); ediția UAP a fiecărui echipament ASTERIX; unitățile fluxurilor JSON
 ghicite. Captura PCAP nu e citită direct: se extrage întâi conținutul UDP/TCP.
+
+## Standarde NATO și conexe
+
+| Standard | Ce e | Stare | Ce intră în sistem |
+|---|---|---|---|
+| **SAPIENT** (BSI Flex 335 v2, adoptat de NATO pentru C-UAS) | senzori anti-dronă | ✅ JSON și **binar** | detecții, trasee; poziția nodului din `statusReport` |
+| **STANAG 4607** (AEDP-7) | GMTI, radare de supraveghere | ✅ | detecții cu viteză pe linia de vizare (Doppler) |
+| **ASTERIX** CAT048, CAT062, CAT021 | radar, trasee de sistem, ADS-B (folosit în NATINAMDS/ACCS) | ✅ | detecții, trasee, calibrare pe ADS-B |
+| **ASTERIX** CAT001, CAT002, CAT034 | formate radar vechi, mesaje de serviciu | ✅ | plot-uri/trasee; ora completă și **poziția radarului** din I034/120 |
+| **Cursor-on-Target** (MIL-STD-2525 / APP-6) | TAK/ATAK | ✅ intrare **și ieșire** | ținte aeriene, poziții proprii; `out/cot.xml` pentru ATAK |
+| **NFFI** (STANAG 5527) | forțe proprii | ✅ | pozițiile echipelor, strat separat pe hartă |
+| **Remote ID** (ASTM F3411 / EN 4709-002) | drone cooperative | ✅ | marchează traseele identificate (`annotate_tracks`) |
+| **Link 16** (STANAG 5516 / MIL-STD-6016), **JREAP** (STANAG 5518 / MIL-STD-3011), **Link 11/22**, **VMF**, **OTH-Gold**, **ADatP-3** | legături de date tactice | 🔒 interfață pregătită | prin `register_decoder()`, după specificația oficială |
+
+- **SAPIENT binar**: `UniversalAdapter(sapient_proto_dir="…")` citește definițiile oficiale `.proto`
+  (publicate de Dstl) cu un decodor protobuf propriu, fără dependențe. Fără ele, raportul cere directorul.
+- **Legături de date cu distribuție controlată**: specificațiile (MIL-STD-6016, MIL-STD-3011 etc.) nu
+  sunt publice și nu au fost reproduse. Sursa se declară cu `declare_source("GW-L16", "link16")`;
+  până la înregistrarea decodorului, `requirements()` spune ce lipsește. Decodorul se scrie în mediul
+  acreditat și întoarce aceleași obiecte (`RadarTrackReport`, `SensorDetection`), deci restul
+  sistemului nu se schimbă.
+- Toate decodoarele sunt scrise după specificațiile publice și verificate doar pe date construite în
+  teste; înainte de utilizare se validează pe înregistrări reale de la fiecare echipament (ediția UAP
+  ASTERIX, semnul vitezei radiale în STANAG 4607, tabelul de clasificare, schema NFFI folosită).
 
 ## Decizii de proiectare
 

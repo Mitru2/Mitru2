@@ -76,6 +76,7 @@ class Track:
     group_id: str | None = None
     negative_applied: set = field(default_factory=set)
     _ctx: dict | None = field(default=None, repr=False)
+    cooperative_id: str | None = None   # identitate cooperativa (Remote ID, ADS-B), daca s-a potrivit
 
     # ---------- interogari ----------
     @property
