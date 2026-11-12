@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SANTINELA COP</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#f6f7f8; --fg:#1d2329; --muted:#5d6670; --panel:#ffffff; --line:#d7dce1; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14181c; --fg:#e6e9ec; --muted:#9aa3ac; --panel:#1c2126; --line:#2c333a; } }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, sans-serif; }
+  #app { display:grid; grid-template-columns: 300px 1fr; height:100%; }
+  aside { padding:12px 16px; overflow:auto; background:var(--panel); border-right:1px solid var(--line); }
+  #map { height:100%; }
+  h1 { font-size:16px; margin:0 0 8px; }
+  .muted { color:var(--muted); font-size:12px; }
+  label { display:block; margin:4px 0; }
+  .trk { border-top:1px solid var(--line); padding:6px 0; }
+  .badge { display:inline-block; padding:0 6px; border-radius:8px; font-size:11px; border:1px solid var(--line); }
+  @media (max-width: 720px) { #app { grid-template-columns: 1fr; grid-template-rows: auto 60vh; } aside { border-right:0; border-bottom:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>SANTINELA – COP</h1>
+    <p class="muted">Încarcă <code>out/cop.geojson</code> produs de <code>python -m santinela.cli</code>.</p>
+    <input type="file" id="file" accept=".geojson,.json">
+    <div id="layers"></div>
+    <div id="tracks"></div>
+  </aside>
+  <div id="map"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([45.27, 28.46], 10);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 16, attribution: '© OpenStreetMap' }).addTo(map);
+
+const STYLE = {
+  traseu_netezit: f => ({ color: f.properties.status === 'confirmat' ? '#c0392b' : '#e67e22', weight: 3, dashArray: f.properties.human_only ? '6 4' : null }),
+  elipsa95: () => ({ color: '#c0392b', weight: 1, fillOpacity: 0.15 }),
+  con: f => ({ color: '#8e44ad', weight: 1, fillOpacity: 0.05 + 0.05 * (3 - f.properties.horizon_min / 5) }),
+  grup_intindere: () => ({ color: '#2c3e50', weight: 2, fillOpacity: 0.12 }),
+  coridor_grup: () => ({ color: '#2c3e50', weight: 1, dashArray: '4 4', fillOpacity: 0.04 }),
+};
+const NAMES = { traseu_netezit: 'Traseu netezit', pozitie: 'Poziție curentă', elipsa95: 'Elipsă 95%', con: 'Con T+5/10/15',
+  grup: 'Grup', grup_intindere: 'Întindere grup', coridor_grup: 'Coridor grup', ambiguu: 'Rapoarte ambigue',
+  destinatii_umbra: 'Destinații probabile (umbră)', observator: 'Observatori' };
+const groups = {};
+
+function render(gj) {
+  Object.values(groups).forEach(g => map.removeLayer(g));
+  for (const k in groups) delete groups[k];
+  const byLayer = {};
+  gj.features.forEach(f => (byLayer[f.properties.layer] ||= []).push(f));
+  const ctl = document.getElementById('layers'); ctl.innerHTML = '<h1>Straturi</h1>';
+  for (const [name, feats] of Object.entries(byLayer)) {
+    const lyr = L.geoJSON({ type: 'FeatureCollection', features: feats }, {
+      style: STYLE[name],
+      pointToLayer: (f, ll) => L.circleMarker(ll, {
+        radius: name === 'observator' ? 3 : name === 'destinatii_umbra' ? 4 + 12 * (f.properties.p || 0) : 6,
+        color: name === 'observator' ? '#27ae60' : name === 'ambiguu' ? '#f1c40f' : name === 'grup' ? '#2c3e50' : name === 'destinatii_umbra' ? '#7f8c8d' : '#c0392b',
+        fillOpacity: 0.8 }),
+      onEachFeature: (f, l) => l.bindPopup('<pre>' + JSON.stringify(f.properties, null, 1) + '</pre>'),
+    });
+    groups[name] = lyr;
+    const on = name !== 'destinatii_umbra' && name !== 'observator';
+    if (on) lyr.addTo(map);
+    const lab = document.createElement('label');
+    lab.innerHTML = `<input type="checkbox" ${on ? 'checked' : ''}> ${NAMES[name] || name} (${feats.length})`;
+    lab.querySelector('input').onchange = e => e.target.checked ? lyr.addTo(map) : map.removeLayer(lyr);
+    ctl.appendChild(lab);
+  }
+  const tl = document.getElementById('tracks'); tl.innerHTML = '<h1>Trasee</h1>';
+  (byLayer.pozitie || []).forEach(f => {
+    const p = f.properties, d = document.createElement('div'); d.className = 'trk';
+    d.innerHTML = `<b>${p.track_id}</b> <span class="badge">${p.status}</span> ${p.class || 'clasă necunoscută'}<br>
+      <span class="muted">${p.speed_kmh} km/h · ${p.n} rapoarte · ${p.sources.length} surse${p.human_only ? ' · doar rapoarte umane' : ''}${p.operator_in_loop ? ' · <b>posibil operator în buclă</b>' : ''}</span>`;
+    tl.appendChild(d);
+  });
+  const focus = gj.features.filter(f => ['traseu_netezit', 'pozitie', 'grup'].includes(f.properties.layer));
+  try { map.fitBounds(L.geoJSON({ type: 'FeatureCollection', features: focus.length ? focus : gj.features }).getBounds(), { padding: [30, 30] }); } catch (e) {}
+}
+
+document.getElementById('file').onchange = async e => {
+  const f = e.target.files[0]; if (f) render(JSON.parse(await f.text()));
+};
+fetch('../out/cop.geojson').then(r => r.ok ? r.json() : null).then(gj => gj && render(gj)).catch(() => {});
+</script>
+</body>
+</html>
