@@ -48,7 +48,10 @@ class RadarSite:
     center: np.ndarray | None = None  # se completeaza la inregistrare in tracker
     active: bool = True
     negative_info: bool = True        # False pentru surse fara acoperire cunoscuta (trasee de sistem, JSON)
-    heading_deg: float = 0.0          # pentru azimut relativ (radare navale, NMEA "R")
+    heading_deg: float = 0.0          # pentru azimut relativ (radare navale, NMEA "R", SAPIENT PLATFORM)
+    heading_known: bool = False
+    mag_declination_deg: float | None = None  # pentru azimut magnetic (SAPIENT MAGNETIC); pozitiv = est
+    asterix_editions: dict | None = None     # {categorie: "1.32"} declarat in configurare
     kind: str = "radar"               # "radar" | "sistem" | "senzor"
 
     @property
@@ -105,6 +108,7 @@ class RadarTrackReport:
     confirmed: bool = True
     drone_class: str | None = None
     received_at: float | None = None
+    ident: str | None = None          # identitate raportata de sursa (ex. SAPIENT 'id')
 
 
 @dataclass

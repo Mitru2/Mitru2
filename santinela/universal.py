@@ -198,6 +198,15 @@ def _snake(n: str) -> str:
     return re.sub(r"(?<!^)([A-Z])", r"_\1", n).lower()
 
 
+def _snake_keys(o):
+    """Forma JSON protobuf (camelCase) -> numele din .proto (snake_case), recursiv."""
+    if isinstance(o, dict):
+        return {(_snake(k) if isinstance(k, str) else k): _snake_keys(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_snake_keys(v) for v in o]
+    return o
+
+
 def _path(d, path: str):
     cur = d
     for part in path.split("."):
@@ -356,7 +365,7 @@ class UniversalAdapter:
     sapient_decoder: object = None                      # callable(bytes) -> dict (forma JSON)
     sapient_proto_dir: str | None = None                # definitiile oficiale .proto (BSI Flex 335 v2)
     sapient_root_message: str = "SapientMessage"
-    sapient_x_is_lon: bool = True                       # Location.x = longitudine (de confirmat pe ICD)
+    sapient_verify_manifest: bool = True                # verifica amprentele fata de manifestul fixat
     drop_non_drone_classes: tuple = ("bird", "pasare", "human", "person", "vehicle", "car")
     min_class_confidence: float = 0.8
     adsb_registration: bool = True
@@ -377,10 +386,19 @@ class UniversalAdapter:
         self._plugins: dict[str, dict] = {}             # nume -> {"decode": f, "detect": f}
         self._declared: dict[str, str] = {}             # sursa -> format declarat
         self._last_full_tod: dict = {}                  # (sac, sic) -> ultima ora completa (CAT002/034)
-        if self.sapient_decoder is None and self.sapient_proto_dir:
-            schema = ProtoSchema.from_dir(self.sapient_proto_dir)
+        self.asterix_editions: dict = {}                # (sac, sic) -> {categorie: "x.y"} din CAT247
+        self.sapient_nodes: dict = {}                       # profil pe nod (din Registration)
+        self.sapient_deviations = defaultdict(list)         # abateri de la standard, pe nod
+        self.sapient_alerts: list = []
+        self.sapient_task_acks: list = []
+        self._sapient_schema = None
+        if self.sapient_proto_dir:
+            from .sapient_proto import load_schema
+            schema = load_schema(self.sapient_proto_dir, strict=self.sapient_verify_manifest)
+            self._sapient_schema = schema
             root = self.sapient_root_message
-            self.sapient_decoder = lambda b: schema.decode(root, b)
+            if self.sapient_decoder is None:
+                self.sapient_decoder = lambda b: schema.decode(root, b)
         for s in list(self.sites):
             self.add_site(s)
 
@@ -565,7 +583,23 @@ class UniversalAdapter:
     # ---------- ASTERIX ----------
     def _asterix(self, buf: bytes, received_at) -> list:
         out = []
-        for cat, blk in iter_blocks(buf):
+        blocks = list(iter_blocks(buf))
+        for cat, blk in blocks:          # intai versiunile (CAT247), apoi datele
+            if cat == 247:
+                for rec in decode_block(blk)[1]:
+                    sid = (rec.get("sac"), rec.get("sic"))
+                    self.asterix_editions.setdefault(sid, {}).update(
+                        {c: v for c, v in rec.get("versions", {}).items()})
+                    st = self._status(f"SAC{sid[0]}/SIC{sid[1]}", "asterix CAT247")
+                    st.note("editii declarate prin CAT247: " + ", ".join(
+                        f"CAT{c:03d} {v}" for c, v in sorted(rec.get("versions", {}).items())))
+        for cat, blk in blocks:
+            if cat == 247:
+                continue
+            if cat in (1, 2, 34, 48, 62, 21):
+                blk = self._edition_filter(cat, blk)
+                if blk is None:
+                    continue
             if cat in (1, 2, 34):
                 out.extend(self._legacy_asterix(cat, blk, received_at))
                 continue
@@ -584,6 +618,40 @@ class UniversalAdapter:
                 else:
                     self._cat021_rec(rec, st, key)
         return out
+
+    def _edition_filter(self, cat: int, blk: bytes):
+        """Verifica editia sursei (din CAT247 sau configurare) fata de tabelele decodorului."""
+        from .asterix import REFERENCE_EDITION, TABLE_MAJOR
+        recs = decode_block(blk)[1] if cat != 1 else None
+        sid = None
+        if recs:
+            sid = (recs[0].get("sac"), recs[0].get("sic"))
+        elif len(blk) > 6:
+            sid = (blk[4], blk[5]) if blk[3] & 0x80 else None
+        if sid is None:
+            return blk
+        key = f"SAC{sid[0]}/SIC{sid[1]}"
+        site = self._by_asterix.get(sid)
+        eds = dict(site.asterix_editions or {}) if site is not None and site.asterix_editions else {}
+        eds.update(self.asterix_editions.get(sid, {}))
+        ed = eds.get(cat)
+        st = self._status(key, f"asterix CAT{cat:03d}")
+        st.count -= 1  # doar verificare, nu un mesaj nou
+        if ed is None:
+            st.note(f"editia CAT{cat:03d} necunoscuta: declarati-o (asterix_editions) sau activati CAT247 la sursa")
+            return blk
+        try:
+            major = int(str(ed).split(".")[0])
+        except ValueError:
+            major = None
+        if major != TABLE_MAJOR.get(cat):
+            st.need(f"editia CAT{cat:03d} {ed} nu e suportata (tabelele sunt pentru editia "
+                    f"{TABLE_MAJOR.get(cat)}.x); datele acestei surse sunt oprite")
+            return None
+        ref = REFERENCE_EDITION.get(cat)
+        if ref and str(ed) != ref:
+            st.note(f"CAT{cat:03d} editia {ed} (referinta {ref}): verificati diferentele de UAP")
+        return blk
 
     def _legacy_asterix(self, cat: int, blk: bytes, received_at) -> list:
         """CAT002/034 (serviciu: ora, pozitia radarului) si CAT001 (plot-uri/trasee vechi)."""
@@ -907,6 +975,7 @@ class UniversalAdapter:
             kind = f[0][-3:]
             if kind in ("HDT", "THS") and site is not None and f[1]:
                 site.heading_deg = float(f[1])
+                site.heading_known = True
             elif kind == "TTM":
                 out.extend(self._ttm(f, st, site, received_at, source))
             elif kind == "TLL":
@@ -983,62 +1052,156 @@ class UniversalAdapter:
     def _sapient(self, objs: list, received_at) -> list:
         out = []
         for o in objs:
-            node = str(_g(o, "nodeId", "sourceId", default="SAPIENT"))
+            o = _snake_keys(o)
+            node = str(o.get("node_id") or o.get("source_id") or "SAPIENT")
             st = self._status(f"SAPIENT:{node}", "sapient")
-            tod = parse_time_tod(_g(o, "timestamp"))
-            reg = _g(o, "registration")
-            if reg is not None:
-                defs = _g(reg, "nodeDefinition", default=[]) or []
-                types = [str(_g(d, "nodeType", default="")) for d in (defs if isinstance(defs, list) else [defs])]
-                st.note(f"inregistrare: {', '.join(t for t in types if t) or 'tip nespecificat'}")
-            status = _g(o, "statusReport")
-            if status is not None:
-                loc = _g(status, "nodeLocation")
-                ll = self._sapient_location(loc, st) if loc else None
-                if ll and f"SAPIENT:{node}" not in self._by_name and node not in self._by_name:
-                    site = RadarSite(node, ll[0], ll[1], negative_info=False, kind="senzor", min_alt=0.0)
-                    self.add_site(site)
-                    st.site = node
-                    st.note("pozitia nodului invatata din statusReport")
-                    st.need("acoperirea si altitudinea minima de detectie (pentru informatie negativa)")
-            det = _g(o, "detectionReport")
+            prof = self.sapient_nodes.setdefault(node, {"zone": None, "vel_kph": False, "types": [], "icd": None})
+            if self._sapient_schema is not None:
+                issues = self._sapient_schema.validate("SapientMessage", o)
+                if issues:
+                    self.sapient_deviations[node].extend(issues)
+                    st.note(f"abateri de la BSI Flex 335 v2.0 (campuri obligatorii/UUID/ULID): {len(issues)} "
+                            f"in ultimul mesaj, ex. {issues[0]}")
+            tod = parse_time_tod(o.get("timestamp"))
+            if "registration" in o:
+                self._sapient_registration(node, o["registration"], prof, st)
+            if "status_report" in o:
+                self._sapient_status(node, o["status_report"], st)
+            if "alert" in o:
+                self.sapient_alerts.append({"node_id": node, "t": tod, **o["alert"]})
+                st.note("mesaje Alert primite (vezi sapient_alerts)")
+            if "task_ack" in o:
+                self.sapient_task_acks.append({"node_id": node, **o["task_ack"]})
+            if "error" in o:
+                self.errors.append(("sapient", f"{node}: {o['error'].get('error_message')}"))
+            det = o.get("detection_report")
             if det is not None:
-                item = self._sapient_detection(node, det, tod, st, received_at)
+                item = self._sapient_detection(node, det, tod, st, received_at, prof)
                 if item is not None:
                     st.accepted += 1
                     out.append(item)
         return out
 
-    def _sapient_location(self, loc: dict, st) -> tuple | None:
-        cs = str(_g(loc, "coordinateSystem", default="LAT_LNG_DEG_M")).upper()
-        x, y = _g(loc, "x"), _g(loc, "y")
+    def _sapient_registration(self, node, reg: dict, prof: dict, st) -> None:
+        prof["icd"] = reg.get("icd_version")
+        prof["types"] = [str(d.get("node_type", "")) for d in reg.get("node_definition", []) or []]
+        prof["name"] = reg.get("name")
+        for mode in reg.get("mode_definition", []) or []:
+            dd = mode.get("detection_definition") or []
+            for d in (dd if isinstance(dd, list) else [dd]):
+                lt = d.get("location_type") or {}
+                if lt.get("zone"):
+                    prof["zone"] = str(lt["zone"])
+                vt = d.get("velocity_type") or {}
+                units = (vt.get("enu_velocity_units") or {}).get("east_north_rate_units")
+                if units in ("SPEED_UNITS_KPH", 2):
+                    prof["vel_kph"] = True
+        st.note(f"inregistrare: {', '.join(t for t in prof['types'] if t) or 'tip nespecificat'}, "
+                f"ICD {prof['icd'] or '?'}")
+        if prof["icd"] and "2" not in str(prof["icd"]).split(".")[0][-2:]:
+            st.note(f"versiune ICD declarata '{prof['icd']}': decodorul e scris pentru BSI Flex 335 v2.0")
+
+    def _sapient_status(self, node, status: dict, st) -> None:
+        if status.get("system") in ("SYSTEM_GOODBYE", 5):
+            st.note("nodul a anuntat deconectarea (SYSTEM_GOODBYE)")
+        loc = status.get("node_location")
+        ll = self._sapient_location(loc, st, node) if loc else None
+        if ll and node not in self._by_name:
+            site = RadarSite(node, ll[0], ll[1], negative_info=False, kind="senzor", min_alt=0.0)
+            self.add_site(site)
+            st.site = node
+            st.note("pozitia nodului invatata din statusReport")
+            st.need("acoperirea si altitudinea minima de detectie (pentru informatie negativa)")
+
+    _LOC_CS = {1: "LAT_LNG_DEG_M", 2: "LAT_LNG_RAD_M", 5: "UTM_M", 0: "UNSPECIFIED"}
+    _RB_CS = {1: "DEGREES_M", 2: "RADIANS_M", 3: "DEGREES_KM", 4: "RADIANS_KM", 0: "UNSPECIFIED"}
+    _RB_DATUM = {1: "TRUE", 2: "MAGNETIC", 3: "GRID", 4: "PLATFORM", 0: "UNSPECIFIED"}
+
+    @staticmethod
+    def _enum(v, table: dict, prefix: str) -> str:
+        if isinstance(v, int):
+            return table.get(v, str(v))
+        v = str(v or "UNSPECIFIED").upper()
+        return v[len(prefix):] if v.startswith(prefix) else v
+
+    def _sapient_location(self, loc: dict, st, node: str | None = None) -> tuple | None:
+        """(lat, lon) din Location; x = longitudine / est (conventia 'sapient.location.x')."""
+        cs = self._enum(loc.get("coordinate_system"), self._LOC_CS, "LOCATION_COORDINATE_SYSTEM_")
+        datum = self._enum(loc.get("datum"), {0: "UNSPECIFIED", 1: "WGS84_E", 2: "WGS84_G"}, "LOCATION_DATUM_")
+        x, y = loc.get("x"), loc.get("y")
         if x is None or y is None:
             return None
-        if "UTM" in cs:
-            zone = str(_g(loc, "utmZone", default=""))
-            m = re.match(r"(\d+)([A-Za-z]?)", zone)
-            if not m:
-                st.need("zona UTM (utmZone) pentru coordonatele UTM")
-                return None
-            northern = (m.group(2) or "N").upper() >= "N"
-            return utm_to_latlon(float(x), float(y), int(m.group(1)), northern)
         x, y = float(x), float(y)
-        if "RAD" in cs:
+        if datum == "WGS84_G" and loc.get("z") is not None:
+            st.note("z raportat fata de geoid (WGS84_G): conversia la inaltime elipsoidala cere modelul EGM, "
+                    "neaplicata (diferenta ~30-40 m in Romania)")
+        if cs == "UNSPECIFIED":
+            st.note("abatere: coordinate_system nespecificat; presupus LAT_LNG_DEG_M")
+            cs = "LAT_LNG_DEG_M"
+        if cs == "UTM_M":
+            if abs(x) <= 180.0 and abs(y) <= 90.0:
+                st.note("abatere: valori lat/lon in campuri UTM (cunoscuta din mostrele Dstl); interpretate ca grade")
+                return y, x
+            zone = loc.get("utm_zone") or (self.sapient_nodes.get(node, {}).get("zone") if node else None)
+            parsed = self._utm_zone(zone, node, st)
+            if parsed is None:
+                return None
+            return utm_to_latlon(x, y, parsed[0], parsed[1])
+        if cs == "LAT_LNG_RAD_M":
             x, y = math.degrees(x), math.degrees(y)
-        if not self.sapient_x_is_lon:
-            x, y = y, x
-        st.note("Location: x = longitudine, y = latitudine (de confirmat pe ICD-ul producatorului)")
         return y, x
 
-    def _sapient_detection(self, node, det, tod, st, received_at):
-        cls = _g(det, "classification", default=[]) or []
+    def _utm_zone(self, zone, node, st) -> tuple | None:
+        """'30N' (emisfera, forma oficiala) sau '30U' (banda de latitudine). 'S' e ambiguu."""
+        m = re.match(r"^\s*(\d{1,2})\s*([A-Za-z]?)\s*$", str(zone or ""))
+        if not m:
+            st.need("zona UTM (Registration: location_type.zone sau Location.utm_zone), ex. '35N'")
+            return None
+        num, letter = int(m.group(1)), m.group(2).upper()
+        if letter in ("", "N"):
+            return num, True
+        if letter == "S":
+            site = self._by_name.get(node) if node else None
+            if site is not None:
+                st.note("zona UTM cu litera 'S' (emisfera sud sau banda S): rezolvata dupa pozitia nodului")
+                return num, site.lat >= 0
+            st.need("zona UTM 'S' e ambigua (emisfera sud vs. banda S, 32-40 grade N): configurati pozitia nodului")
+            return None
+        if letter in "CDEFGHJKLM":
+            return num, False
+        if letter in "PQRTUVWX":
+            st.note(f"zona UTM data ca banda de latitudine ('{zone}'), nu ca emisfera")
+            return num, True
+        st.need(f"zona UTM nerecunoscuta '{zone}'")
+        return None
+
+    @staticmethod
+    def _covariance(det: dict) -> np.ndarray | None:
+        """Covarianta x/y din object_info 'covariance_*' (practica observata, nestandardizata)."""
+        vals = {}
+        for oi in det.get("object_info", []) or []:
+            typ = str(oi.get("type", "")).lower()
+            if typ.startswith("covariance_"):
+                try:
+                    vals[typ[len("covariance_"):]] = float(oi.get("value"))
+                except (TypeError, ValueError):
+                    return None
+        if not {"xx", "yy"} <= set(vals):
+            return None
+        xy = vals.get("xy", vals.get("yx", 0.0))
+        if "xy" in vals and "yx" in vals and abs(vals["xy"] - vals["yx"]) > 1e-6 * max(1.0, abs(vals["xy"])):
+            return np.full((2, 2), np.nan)  # nesimetrica
+        return np.array([[vals["xx"], xy], [xy, vals["yy"]]])
+
+    def _sapient_detection(self, node, det, tod, st, received_at, prof):
+        cls = det.get("classification", []) or []
         if isinstance(cls, dict):
             cls = [cls]
-        top = max(cls, key=lambda c: float(_g(c, "confidence", default=0) or 0), default=None)
+        top = max(cls, key=lambda c: float(c.get("confidence", 0) or 0), default=None)
         drone_class = None
         if top is not None:
-            ctype = str(_g(top, "type", default="")).lower()
-            conf = float(_g(top, "confidence", default=0) or 0)
+            ctype = str(top.get("type", "")).lower()
+            conf = float(top.get("confidence", 0) or 0)
             if any(k in ctype for k in self.drop_non_drone_classes) and conf >= self.min_class_confidence:
                 st.note("detectii clasificate sigur ca non-drona (pasare, persoana, vehicul) sunt ignorate")
                 return None
@@ -1047,70 +1210,111 @@ class UniversalAdapter:
             st.need("timestamp in mesaje")
             return None
         t = round(tod_to_t(tod, self.tod_ref), 4)
-        obj = _g(det, "objectId")
-        rid = str(_g(det, "reportId", default=f"{node}:{tod:.3f}:{obj}"))
-        loc = _g(det, "location")
-        rb = _g(det, "rangeBearing")
+        obj = det.get("object_id")
+        rid = str(det.get("report_id") or f"{node}:{tod:.3f}:{obj}")
+        loc, rb = det.get("location"), det.get("range_bearing")
         site = self._by_name.get(node)
-        vel = _g(det, "enuVelocity", "velocity")
         if loc is not None:
-            ll = self._sapient_location(loc, st)
+            ll = self._sapient_location(loc, st, node)
             if ll is None:
                 return None
             if site is None:
                 site = self._auto_site(node, ll[0], ll[1], "senzor", st)
             p = self.frame.to_xy(*ll) - site.center
-            ex = float(_g(loc, "xError", default=0) or 0)
-            ey = float(_g(loc, "yError", default=0) or 0)
-            cs = str(_g(loc, "coordinateSystem", default="")).upper()
-            if "LAT_LNG" in cs and (ex or ey):  # erori in grade -> metri
-                ex, ey = ex * 111320.0 * math.cos(math.radians(ll[0])), ey * 111320.0
-                ex, ey = ey, ex  # (x=lon, y=lat) -> (est, nord)
-            sx, sy = max(ex, 10.0) if ex else 50.0, max(ey, 10.0) if ey else 50.0
+            cs = self._enum(loc.get("coordinate_system"), self._LOC_CS, "LOCATION_COORDINATE_SYSTEM_")
+            ex, ey = float(loc.get("x_error") or 0), float(loc.get("y_error") or 0)
+            if cs.startswith("LAT_LNG") and (ex or ey):  # erori unghiulare -> metri
+                k = 1.0 if cs == "LAT_LNG_DEG_M" else math.degrees(1.0)
+                ex = ex * k * 111320.0 * math.cos(math.radians(ll[0]))
+                ey = ey * k * 111320.0
+            R = np.diag([max(ex, 10.0) ** 2 if ex else 50.0 ** 2, max(ey, 10.0) ** 2 if ey else 50.0 ** 2])
             if not (ex or ey):
-                st.note("fara xError/yError: precizia pozitiei e presupusa (50 m)")
-            R = np.diag([sx ** 2, sy ** 2])
-            height = _g(loc, "z")
+                st.note("fara x_error/y_error: precizia pozitiei e presupusa (50 m)")
+            height = loc.get("z")
         elif rb is not None:
             if site is None:
-                st.need("pozitia nodului (statusReport cu nodeLocation sau configurare): "
-                        "rangeBearing e relativ la senzor")
+                st.need("pozitia nodului (statusReport cu node_location sau configurare): "
+                        "range_bearing e relativ la nod")
                 return None
-            cs = str(_g(rb, "coordinateSystem", default="DEGREES_M")).upper()
-            conv = (lambda a: a) if "RAD" in cs else math.radians
-            az = conv(float(_g(rb, "azimuth")))
-            if "MAGNETIC" in str(_g(rb, "datum", default="")).upper():
-                st.need("declinatia magnetica a nodului (azimut magnetic)")
-            el = conv(float(_g(rb, "elevation", default=0) or 0))
-            rng = float(_g(rb, "range"))
-            ground = rng * math.cos(el)
-            s_az = conv(float(_g(rb, "azimuthError", default=0) or 0)) or math.radians(site.sigma_az_deg)
-            s_r = float(_g(rb, "rangeError", default=0) or 0) or site.sigma_range
-            z, R = polar_gauss_moments(np.zeros(2), az, ground, s_az, s_r)
-            p = z
-            height = (site.antenna_height + rng * math.sin(el)) if el else None
+            r = self._range_bearing(rb, site, node, st)
+            if r is None:
+                return None
+            p, R, height = r
         else:
-            st.need("location sau rangeBearing in detectionReport")
+            st.need("location sau range_bearing in detection_report")
             return None
+        cov_oi = self._covariance(det)
+        if cov_oi is not None:
+            if np.all(np.isfinite(cov_oi)) and np.all(np.linalg.eigvalsh(cov_oi) > 0):
+                R = cov_oi
+                st.note("covarianta pozitiei citita din object_info (covariance_*)")
+            else:
+                st.note("abatere: covarianta din object_info nesimetrica sau nepozitiv definita; ignorata")
+        vel = det.get("enu_velocity")
         vx = vy = None
-        if vel is not None:
-            vx, vy = _g(vel, "eastRate"), _g(vel, "northRate")
+        if vel is not None and vel.get("east_rate") is not None and vel.get("north_rate") is not None:
+            k = 1 / 3.6 if prof.get("vel_kph") else 1.0
+            vx, vy = float(vel["east_rate"]) * k, float(vel["north_rate"]) * k
+        if det.get("id"):
+            st.note("detectii cu identitate (campul id, ex. inmatriculare): pastrata pe raport")
         if obj is not None:
             cov = R
-            if vx is not None and vy is not None:
+            if vx is not None:
                 cov = np.zeros((4, 4))
                 cov[:2, :2] = R
-                cov[2:, 2:] = np.eye(2) * max(float(_g(vel, "eastRateError", default=2.0) or 2.0), 0.5) ** 2
-                vx, vy = float(vx), float(vy)
-            else:
-                vx = vy = None
-            return RadarTrackReport(rid, site.sensor_id, _stable_int(obj), t, float(p[0]), float(p[1]),
-                                    vx, vy, cov, float(height) if height is not None else None, True,
-                                    drone_class=drone_class, received_at=received_at)
+                k = 1 / 3.6 if prof.get("vel_kph") else 1.0
+                se = float(vel.get("east_rate_error") or 2.0) * k
+                sn = float(vel.get("north_rate_error") or 2.0) * k
+                cov[2:, 2:] = np.diag([max(se, 0.5) ** 2, max(sn, 0.5) ** 2])
+            rep = RadarTrackReport(rid, site.sensor_id, _stable_int(obj), t, float(p[0]), float(p[1]),
+                                   vx, vy, cov, float(height) if height is not None else None, True,
+                                   drone_class=drone_class, received_at=received_at)
+            rep.ident = det.get("id")
+            return rep
         lat, lon = self.frame.to_latlon(*(site.center + p))
         return SensorDetection(rid, site.sensor_id, t, lat, lon, R, drone_class=drone_class, pd=site.pd,
                                lambda_fa=site.lambda_fa, received_at=received_at,
                                altitude_m=float(height) if height is not None else None)
+
+    def _range_bearing(self, rb: dict, site: RadarSite, node, st):
+        """(pozitie fata de nod, covarianta, inaltime) din RangeBearing, cu referinta de nord corecta."""
+        cs = self._enum(rb.get("coordinate_system"), self._RB_CS, "RANGE_BEARING_COORDINATE_SYSTEM_")
+        datum = self._enum(rb.get("datum"), self._RB_DATUM, "RANGE_BEARING_DATUM_")
+        if cs == "UNSPECIFIED":
+            st.note("abatere: coordinate_system nespecificat in range_bearing; presupus grade/metri")
+            cs = "DEGREES_M"
+        ang = (lambda a: float(a)) if cs.startswith("RADIANS") else (lambda a: math.radians(float(a)))
+        rscale = 1000.0 if cs.endswith("_KM") else 1.0
+        az = ang(rb.get("azimuth") or 0.0)
+        if datum in ("TRUE", "UNSPECIFIED"):
+            if datum == "UNSPECIFIED":
+                st.note("abatere: datum nespecificat in range_bearing; presupus nord adevarat")
+        elif datum == "MAGNETIC":
+            if site.mag_declination_deg is None:
+                st.need("declinatia magnetica a nodului (mag_declination_deg; ~+6 grade in Dobrogea, din WMM)")
+                return None
+            az += math.radians(site.mag_declination_deg)
+        elif datum == "GRID":
+            zone = self.sapient_nodes.get(node, {}).get("zone")
+            zn = self._utm_zone(zone, node, st)[0] if zone and self._utm_zone(zone, node, st) else \
+                int((site.lon + 180.0) // 6) + 1
+            lon0 = (zn - 1) * 6 - 180 + 3
+            gamma = math.atan(math.tan(math.radians(site.lon - lon0)) * math.sin(math.radians(site.lat)))
+            az += gamma
+            st.note(f"azimut fata de nordul grilei: corectat cu convergenta meridianelor ({math.degrees(gamma):.2f} grd)")
+        elif datum == "PLATFORM":
+            if not site.heading_known:
+                st.need("capul platformei nodului (heading_deg) pentru azimutul relativ la platforma")
+                return None
+            az += math.radians(site.heading_deg)
+        el = ang(rb.get("elevation") or 0.0)
+        rng = float(rb.get("range")) * rscale
+        ground = rng * math.cos(el)
+        s_az = ang(rb.get("azimuth_error")) if rb.get("azimuth_error") else math.radians(site.sigma_az_deg)
+        s_r = float(rb.get("range_error")) * rscale if rb.get("range_error") else site.sigma_range
+        p, R = polar_gauss_moments(np.zeros(2), az, ground, s_az, s_r)
+        height = (site.antenna_height + rng * math.sin(el)) if rb.get("elevation") is not None else None
+        return p, R, height
 
     # ---------- JSON de producator ----------
     def _json(self, objs: list, received_at, source) -> list:

@@ -1,0 +1,26 @@
+{
+  "standard": "BSI Flex 335 v2.0 (SAPIENT)",
+  "source": "https://raw.githubusercontent.com/dstl/SAPIENT-Proto-Files/master/",
+  "remote_prefix_strip": "sapient_msg/",
+  "fetched": "2026-11-13",
+  "note": "Amprente SHA-256 ale fisierelor descarcate la data de mai sus. Daca depozitul Dstl se schimba, verificarea esueaza intentionat: actualizati manifestul doar dupa revizuirea diferentelor.",
+  "files": {
+    "sapient_msg/bsi_flex_335_v2_0/alert.proto": "d9c4392c9e63f68bba776755057527786f889b4022c97252cf14a26eacd7d3ff",
+    "sapient_msg/bsi_flex_335_v2_0/alert_ack.proto": "2feaec808296dc90a1f64d333bca6bc750edb48da1f198f65d9ac5711c5307c1",
+    "sapient_msg/bsi_flex_335_v2_0/associated_detection.proto": "35615503d11d5e8a42073531ff8bfd8b8c4f2eb92af125f53bc9a8106fdf3244",
+    "sapient_msg/bsi_flex_335_v2_0/associated_file.proto": "128bb94aed8c8b47594c89d672f8c26cf8e658567428e0b15e26e1892eeebbf8",
+    "sapient_msg/bsi_flex_335_v2_0/detection_report.proto": "d597b0bac12080f004ec43c481c817a3ecf0df820cc4908451eb5a34573b04b6",
+    "sapient_msg/bsi_flex_335_v2_0/error.proto": "977dbe0d6434712d5ede2c5c65d7c3b80b008f94a8330d2bc1ede56b8cc2db23",
+    "sapient_msg/bsi_flex_335_v2_0/follow.proto": "cdcf2ec4265ad63349c2ee96e704f7113ff398f958520f3b1c75153b39873dbc",
+    "sapient_msg/bsi_flex_335_v2_0/location.proto": "3a7d3c000349176cf5fdbe5b5ab0dd8e1cef061815b32c43621478e39daadcca",
+    "sapient_msg/bsi_flex_335_v2_0/range_bearing.proto": "9230fe7943f2b8b28daee40ec2f4357467f256b26496d44bfc3cab8e8f646ab3",
+    "sapient_msg/bsi_flex_335_v2_0/registration.proto": "84ad97823aa1ed8f3dbaf18adfea3d4a01e68b26e62619baa6bea5f52c699c5a",
+    "sapient_msg/bsi_flex_335_v2_0/registration_ack.proto": "fbb4b4e7f09e7bf68369e4b9664cb5dd59245991310f2637608692a17fcf1a35",
+    "sapient_msg/bsi_flex_335_v2_0/sapient_message.proto": "e11ea1d3fe3fbccb13aafb53bca2187fc2e2e66418578a91cfdb42f89a055426",
+    "sapient_msg/bsi_flex_335_v2_0/status_report.proto": "a2675a6d0c0026912e2cb750fd93de0bdaa2c59d32cd424cacb694fc7c83db23",
+    "sapient_msg/bsi_flex_335_v2_0/task.proto": "956076d43ac06f79df711fa0c5a695f1c10102389eb4c25726936f30df8161a2",
+    "sapient_msg/bsi_flex_335_v2_0/task_ack.proto": "78b94c1c75e227f50b5bf4afde729b8bc2666cac3f675b13cb9b6084d2c3e3b7",
+    "sapient_msg/bsi_flex_335_v2_0/velocity.proto": "ac74090ecf1d7bcb68376ca5780e7b096fbdd524c8055837ace26502f4f14dad",
+    "sapient_msg/proto_options.proto": "9e9870d6b8f497969ee6283d4664c47a68ce036c83b3355422c312fc721f2268"
+  }
+}

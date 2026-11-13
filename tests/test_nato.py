@@ -24,107 +24,146 @@ def ll(x, y):
 
 
 # ---------------------------------------------------------------- protobuf / SAPIENT binar
+# Subset al definitiilor oficiale BSI Flex 335 v2.0, cu numerele de camp oficiale (location.proto,
+# range_bearing.proto, velocity.proto, detection_report.proto, sapient_message.proto). Testele complete
+# pe fisierele oficiale ruleaza cand SANTINELA_SAPIENT_PROTO indica directorul lor (test_sapient_official.py).
 SAPIENT_TEST_PROTO = """
 syntax = "proto3";
-package sapient_msg.test;
+package sapient_msg.bsi_flex_335_v2_0;
 import "google/protobuf/timestamp.proto";
 
 enum LocationCoordinateSystem {
+  reserved 3, 4;
   LOCATION_COORDINATE_SYSTEM_UNSPECIFIED = 0;
   LOCATION_COORDINATE_SYSTEM_LAT_LNG_DEG_M = 1;
-  LOCATION_COORDINATE_SYSTEM_UTM_M = 3;
+  LOCATION_COORDINATE_SYSTEM_LAT_LNG_RAD_M = 2;
+  LOCATION_COORDINATE_SYSTEM_UTM_M = 5;
 }
+enum LocationDatum { LOCATION_DATUM_UNSPECIFIED = 0; LOCATION_DATUM_WGS84_E = 1; LOCATION_DATUM_WGS84_G = 2; }
 message Location {
-  optional double x = 1;
-  optional double y = 2;
+  optional double x = 1 [(field_options) = {is_mandatory: true}];
+  optional double y = 2 [(field_options) = {is_mandatory: true}];
   optional double z = 3;
-  optional LocationCoordinateSystem coordinate_system = 7;
+  optional double x_error = 4;
+  optional double y_error = 5;
+  optional LocationCoordinateSystem coordinate_system = 7 [(field_options) = {is_mandatory: true}];
+  optional LocationDatum datum = 8 [(field_options) = {is_mandatory: true}];
   optional string utm_zone = 9;
 }
 message RangeBearing {
   optional double elevation = 1;
   optional double azimuth = 2;
   optional double range = 3;
+  optional int32 coordinate_system = 7;
+  optional int32 datum = 8;
 }
 message ENUVelocity { optional double east_rate = 1; optional double north_rate = 2; }
 message DetectionReport {
-  optional string report_id = 1;
-  optional string object_id = 2;
+  optional string report_id = 1 [(field_options) = {is_mandatory: true, is_ulid: true}];
+  optional string object_id = 2 [(field_options) = {is_mandatory: true, is_ulid: true}];
   oneof location_oneof {
-    Location location = 4;
+    option (oneof_options) = {is_mandatory: true};
     RangeBearing range_bearing = 5;
+    Location location = 6;
   }
-  message DetectionReportClassification {   // imbricat
+  message TrackObjectInfo { optional string type = 1; optional string value = 2; optional float error = 3; }
+  repeated TrackObjectInfo object_info = 10;
+  message DetectionReportClassification {
     optional string type = 1;
     optional float confidence = 2;
   }
-  repeated DetectionReportClassification classification = 8;
-  optional ENUVelocity enu_velocity = 9;
-  repeated sint32 tags = 10 [packed = true];
-  map<string, string> extra = 11;
+  repeated DetectionReportClassification classification = 11;
+  oneof velocity_oneof { ENUVelocity enu_velocity = 19; }
+  optional string id = 23;
 }
-message StatusReport { optional Location node_location = 5; }
+message StatusReport { optional Location node_location = 7; }
 message SapientMessage {
-  google.protobuf.Timestamp timestamp = 1;
-  optional string node_id = 2;
+  optional google.protobuf.Timestamp timestamp = 1 [(field_options) = {is_mandatory: true}];
+  optional string node_id = 2 [(field_options) = {is_mandatory: true, is_uuid: true}];
   oneof content {
-    StatusReport status_report = 12;
-    DetectionReport detection_report = 13;
+    option (oneof_options) = {is_mandatory: true};
+    StatusReport status_report = 6;
+    DetectionReport detection_report = 7;
   }
 }
 """
+
+NODE = "6f1c2e0a-3b5d-4c7e-9f10-2a3b4c5d6e7f"
+OBJ = "01JCX3T4ZQ8V7M2N5P6R9S0T1W"
 
 
 def _ts(epoch: float) -> bytes:
     return encode_field(1, int(epoch)) + encode_field(2, int(round((epoch % 1) * 1e9)))
 
 
-def _sapient_detection(epoch, node, obj, lat, lon, cls="UAV", conf=0.8) -> bytes:
-    loc = encode_field(1, lon) + encode_field(2, lat) + encode_field(3, 50.0) + encode_field(7, 1)
+def _sapient_detection(epoch, node, obj, lat, lon, cls="UAV", conf=0.8, cov=None) -> bytes:
+    loc = (encode_field(1, lon) + encode_field(2, lat) + encode_field(3, 50.0)
+           + encode_field(7, 1) + encode_field(8, 1))
     clsm = encode_field(1, cls) + encode_field(2, conf, "float")
     vel = encode_field(1, -30.0) + encode_field(2, 4.0)
-    packed = b"".join(encode_varint((v << 1) ^ (v >> 63)) for v in (-2, 5))
-    extra = encode_field(1, "k") + encode_field(2, "v")
-    det = (encode_field(1, f"r-{obj}") + encode_field(2, obj) + encode_field(4, loc) + encode_field(8, clsm)
-           + encode_field(9, vel) + encode_field(10, packed) + encode_field(11, extra))
-    return encode_field(1, _ts(epoch)) + encode_field(2, node) + encode_field(13, det)
+    oi = b""
+    for k, v in (cov or {}).items():
+        oi += encode_field(10, encode_field(1, f"covariance_{k}") + encode_field(2, str(v)))
+    det = (encode_field(1, "01JCX3T4ZQ8V7M2N5P6R9S0T1X") + encode_field(2, obj) + encode_field(6, loc) + oi
+           + encode_field(11, clsm) + encode_field(19, vel))
+    return encode_field(1, _ts(epoch)) + encode_field(2, node) + encode_field(7, det)
 
 
-def test_proto_schema_decodes_nested_oneof_enum_packed_map():
+def test_proto_schema_decodes_and_validates():
     sch = ProtoSchema.from_text(SAPIENT_TEST_PROTO)
     lat, lon = ll(2000.0, 1000.0)
-    msg = sch.decode("SapientMessage", _sapient_detection(1794477605.25, "n1", "o1", lat, lon))
+    msg = sch.decode("SapientMessage", _sapient_detection(1794477605.25, NODE, OBJ, lat, lon))
     det = msg["detection_report"]
-    assert msg["node_id"] == "n1"
     assert msg["timestamp"] == {"seconds": 1794477605, "nanos": 250000000}
     assert det["location"]["coordinate_system"] == "LOCATION_COORDINATE_SYSTEM_LAT_LNG_DEG_M"
-    assert det["location"]["y"] == pytest.approx(lat)
+    assert det["location"]["x"] == pytest.approx(lon)          # x = longitudine
     assert det["classification"][0]["type"] == "UAV"
-    assert det["classification"][0]["confidence"] == pytest.approx(0.8)
-    assert det["tags"] == [-2, 5]
-    assert det["extra"] == {"k": "v"}
+    assert sch.validate("SapientMessage", msg) == []
+    bad = {"node_id": "nod-7", "detection_report": {"report_id": "x", "object_id": OBJ}}
+    issues = sch.validate("SapientMessage", bad)
+    assert any("timestamp: camp obligatoriu" in i for i in issues)
+    assert any("node_id: nu e UUID" in i for i in issues)
+    assert any("report_id: nu e ULID" in i for i in issues)
+    assert any("location_oneof" in i for i in issues)
 
 
-def test_proto_unknown_fields_are_skipped_and_errors_on_truncation():
+def test_proto_encode_round_trip_and_unknown_fields():
     sch = ProtoSchema.from_text(SAPIENT_TEST_PROTO)
-    data = encode_field(99, "necunoscut") + encode_field(2, "n9")
-    assert sch.decode("SapientMessage", data) == {"node_id": "n9"}
+    d = {"timestamp": {"seconds": 5, "nanos": 7}, "node_id": NODE,
+         "detection_report": {"report_id": OBJ, "object_id": OBJ,
+                              "location": {"x": 28.1, "y": 45.2, "coordinate_system": "LOCATION_COORDINATE_SYSTEM_UTM_M",
+                                           "datum": 1, "utm_zone": "35N"},
+                              "classification": [{"type": "UAV", "confidence": 0.5}]}}
+    back = sch.decode("SapientMessage", sch.encode("SapientMessage", d))
+    assert back["detection_report"]["location"]["coordinate_system"] == "LOCATION_COORDINATE_SYSTEM_UTM_M"
+    assert back["detection_report"]["location"]["datum"] == "LOCATION_DATUM_WGS84_E"
+    assert back["node_id"] == NODE and back["timestamp"] == {"seconds": 5, "nanos": 7}
+    assert sch.decode("SapientMessage", encode_field(99, "x") + encode_field(2, "n9")) == {"node_id": "n9"}
     with pytest.raises(Exception):
         sch.decode("SapientMessage", encode_field(2, "n9")[:-2])
 
 
-def test_sapient_binary_end_to_end_with_proto_dir(tmp_path):
+def test_sapient_binary_end_to_end(tmp_path):
     (tmp_path / "sapient.proto").write_text(SAPIENT_TEST_PROTO)
-    ad = UniversalAdapter(frame=FR, tod_ref=TOD0, sapient_proto_dir=str(tmp_path))
+    ad = UniversalAdapter(frame=FR, tod_ref=TOD0, sapient_proto_dir=str(tmp_path), sapient_verify_manifest=False)
     lat, lon = ll(3000.0, -1000.0)
     epoch = 1794477600 + 12  # 2026-11-12 10:00:12 UTC
-    body = _sapient_detection(epoch, "cuas-1", "o-5", lat, lon)
-    bird = _sapient_detection(epoch, "cuas-1", "o-6", lat, lon, cls="Bird", conf=0.97)
+    body = _sapient_detection(epoch, NODE, OBJ, lat, lon, cov={"xx": 400.0, "xy": 50.0, "yy": 900.0})
+    bird = _sapient_detection(epoch, NODE, "01JCX3T4ZQ8V7M2N5P6R9S0T1Y", lat, lon, cls="Bird", conf=0.97)
     framed = b"".join(len(b).to_bytes(4, "little") + b for b in (body, bird))
-    assert detect_format(framed[:4 + len(body)]) == "sapient-protobuf"
+    assert detect_format(framed) == "sapient-protobuf"
     out = ad.feed(framed)
     assert len(out) == 1 and isinstance(out[0], RadarTrackReport)
-    assert out[0].t == pytest.approx(12.0) and out[0].vx == -30.0 and out[0].height_m == 50.0
+    r = out[0]
+    assert r.t == pytest.approx(12.0) and r.vx == -30.0 and r.height_m == 50.0
+    assert r.cov[:2, :2] == pytest.approx(np.array([[400.0, 50.0], [50.0, 900.0]]))
+    assert not ad.sapient_deviations[NODE]
+
+
+def test_sapient_manifest_rejects_other_files(tmp_path):
+    (tmp_path / "sapient.proto").write_text(SAPIENT_TEST_PROTO)
+    with pytest.raises(Exception, match="manifestului"):
+        UniversalAdapter(frame=FR, sapient_proto_dir=str(tmp_path))
 
 
 # ---------------------------------------------------------------- STANAG 4607
@@ -220,7 +259,7 @@ def test_track_to_cot_round_trip():
     trk = tr.tracks["T0001"]
     xml = cot.track_to_cot(trk, FR, datetime(2026, 11, 12, 10, 0, 25, tzinfo=timezone.utc))
     ev = cot.parse(xml)[0]
-    assert ev.type == "a-h-A-M-F-Q" and ev.role == "tinta"
+    assert ev.type == "a-s-A-M-F-Q" and ev.role == "tinta"   # confirmat automat = suspect, nu ostil
     assert FR.to_xy(ev.lat, ev.lon) == pytest.approx(trk.state.x[:2], abs=1.0)
     assert ev.speed == pytest.approx(40.0, abs=5.0)
 

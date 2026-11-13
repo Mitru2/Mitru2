@@ -1,0 +1,109 @@
+// Subset al BSI Flex 335 v2.0 (SAPIENT) pentru teste: aceleasi nume si numere de camp ca fisierele
+// oficiale Dstl (sapient_msg/bsi_flex_335_v2_0/*.proto), doar campurile folosite in teste.
+
+syntax = "proto3";
+package sapient_msg.bsi_flex_335_v2_0;
+import "google/protobuf/timestamp.proto";
+
+enum LocationCoordinateSystem {
+  reserved 3, 4;
+  LOCATION_COORDINATE_SYSTEM_UNSPECIFIED = 0;
+  LOCATION_COORDINATE_SYSTEM_LAT_LNG_DEG_M = 1;
+  LOCATION_COORDINATE_SYSTEM_LAT_LNG_RAD_M = 2;
+  LOCATION_COORDINATE_SYSTEM_UTM_M = 5;
+}
+enum LocationDatum { LOCATION_DATUM_UNSPECIFIED = 0; LOCATION_DATUM_WGS84_E = 1; LOCATION_DATUM_WGS84_G = 2; }
+message Location {
+  optional double x = 1 [(field_options) = {is_mandatory: true}];
+  optional double y = 2 [(field_options) = {is_mandatory: true}];
+  optional double z = 3;
+  optional double x_error = 4;
+  optional double y_error = 5;
+  optional LocationCoordinateSystem coordinate_system = 7 [(field_options) = {is_mandatory: true}];
+  optional LocationDatum datum = 8 [(field_options) = {is_mandatory: true}];
+  optional string utm_zone = 9;
+}
+message RangeBearing {
+  optional double elevation = 1;
+  optional double azimuth = 2;
+  optional double range = 3;
+  optional int32 coordinate_system = 7;
+  optional int32 datum = 8;
+}
+message ENUVelocity { optional double east_rate = 1; optional double north_rate = 2; }
+message DetectionReport {
+  optional string report_id = 1 [(field_options) = {is_mandatory: true, is_ulid: true}];
+  optional string object_id = 2 [(field_options) = {is_mandatory: true, is_ulid: true}];
+  oneof location_oneof {
+    option (oneof_options) = {is_mandatory: true};
+    RangeBearing range_bearing = 5;
+    Location location = 6;
+  }
+  message TrackObjectInfo { optional string type = 1; optional string value = 2; optional float error = 3; }
+  repeated TrackObjectInfo object_info = 10;
+  message DetectionReportClassification {
+    optional string type = 1;
+    optional float confidence = 2;
+  }
+  repeated DetectionReportClassification classification = 11;
+  oneof velocity_oneof { ENUVelocity enu_velocity = 19; }
+  optional string id = 23;
+}
+message StatusReport { optional string report_id = 1; optional Location node_location = 7; }
+message Registration {
+  message NodeDefinition { optional NodeType node_type = 1 [(field_options) = {is_mandatory: true}]; }
+  enum NodeType { NODE_TYPE_UNSPECIFIED = 0; NODE_TYPE_RADAR = 2; NODE_TYPE_CAMERA = 4; NODE_TYPE_FUSION_NODE = 20; }
+  repeated NodeDefinition node_definition = 1 [(field_options) = {is_mandatory: true}];
+  optional string icd_version = 2 [(field_options) = {is_mandatory: true}];
+  optional string name = 3;
+}
+message RegistrationAck {
+  reserved 2;
+  optional bool acceptance = 1 [(field_options) = {is_mandatory: true}];
+  repeated string ack_response_reason = 3;
+}
+message LocationList { repeated Location locations = 1; }
+message LocationOrRangeBearing { oneof fov_oneof { LocationList location_list = 2; } }
+message Task {
+  optional string task_id = 1 [(field_options) = {is_mandatory: true, is_ulid: true}];
+  optional string task_name = 2;
+  enum Control { CONTROL_UNSPECIFIED = 0; CONTROL_START = 1; CONTROL_STOP = 2; CONTROL_PAUSE = 3; }
+  optional Control control = 6 [(field_options) = {is_mandatory: true}];
+  message Command { oneof command { string request = 1; LocationOrRangeBearing look_at = 6; } }
+  optional Command command = 8;
+}
+message TaskAck {
+  optional string task_id = 1 [(field_options) = {is_mandatory: true, is_ulid: true}];
+  enum TaskStatus { TASK_STATUS_UNSPECIFIED = 0; TASK_STATUS_ACCEPTED = 1; TASK_STATUS_REJECTED = 2; }
+  optional TaskStatus task_status = 2 [(field_options) = {is_mandatory: true}];
+  repeated string reason = 5;
+}
+message Alert {
+  optional string alert_id = 1 [(field_options) = {is_mandatory: true, is_ulid: true}];
+  optional string description = 4;
+  oneof location_oneof { Location location = 6; }
+}
+message AlertAck {
+  optional string alert_id = 1 [(field_options) = {is_mandatory: true, is_ulid: true}];
+  repeated string reason = 4;
+  enum AlertAckStatus { ALERT_ACK_STATUS_UNSPECIFIED = 0; ALERT_ACK_STATUS_ACCEPTED = 1; }
+  optional AlertAckStatus alert_ack_status = 5 [(field_options) = {is_mandatory: true}];
+}
+message Error { optional bytes packet = 1; repeated string error_message = 3; }
+message SapientMessage {
+  optional google.protobuf.Timestamp timestamp = 1 [(field_options) = {is_mandatory: true}];
+  optional string node_id = 2 [(field_options) = {is_mandatory: true, is_uuid: true}];
+  optional string destination_id = 3 [(field_options) = {is_uuid: true}];
+  oneof content {
+    option (oneof_options) = {is_mandatory: true};
+    Registration registration = 4;
+    RegistrationAck registration_ack = 5;
+    StatusReport status_report = 6;
+    DetectionReport detection_report = 7;
+    Task task = 8;
+    TaskAck task_ack = 9;
+    Alert alert = 10;
+    AlertAck alert_ack = 11;
+    Error error = 12;
+  }
+}

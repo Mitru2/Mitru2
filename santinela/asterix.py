@@ -112,7 +112,19 @@ UAP034 = {
     12: ("090", "fixed", 2), 13: ("RE", "explicit", None), 14: ("SP", "explicit", None),
 }
 
-UAPS = {48: UAP048, 62: UAP062, 21: UAP021, 1: UAP001_PLOT, 2: UAP002, 34: UAP034}
+# CAT247: schimbul numerelor de versiune ale categoriilor (I247/550: categorie, versiune majora, minora).
+# FRN 5-7 dupa tiparul uzual (rezervat, SP, RE) - de confirmat pe specificatie.
+UAP247 = {
+    1: ("010", "fixed", 2), 2: ("015", "fixed", 1), 3: ("140", "fixed", 3), 4: ("550", "rep", 3),
+    5: ("-", "spare", None), 6: ("SP", "explicit", None), 7: ("RE", "explicit", None),
+}
+
+UAPS = {48: UAP048, 62: UAP062, 21: UAP021, 1: UAP001_PLOT, 2: UAP002, 34: UAP034, 247: UAP247}
+
+# Editia pentru care sunt scrise tabelele (majora trebuie sa coincida) si editia curenta de referinta
+# (conventia 'asterix.editions', din raportul din 13.11.2026).
+TABLE_MAJOR = {48: 1, 62: 1, 21: 2, 34: 1, 1: 1, 2: 1}
+REFERENCE_EDITION = {48: "1.32", 62: "1.21", 21: "2.7", 34: "1.29"}
 UAP = UAP048  # compatibilitate
 ITEM_FRN = {48: {v[0]: k for k, v in UAP048.items()},
             62: {v[0]: k for k, v in UAP062.items() if v[0] != "-"},
@@ -367,7 +379,18 @@ def _i_service(item: str, d: bytes) -> dict:
     return {}
 
 
-INTERPRETERS = {48: _i048, 62: _i062, 21: _i021, 1: _i001, 2: _i_service, 34: _i_service}
+def _i247(item: str, d: bytes) -> dict:
+    if item == "010":
+        return {"sac": d[0], "sic": d[1]}
+    if item == "140":
+        return {"tod": int.from_bytes(d, "big") / 128.0}
+    if item == "550":
+        n = d[0]
+        return {"versions": {d[1 + 3 * k]: f"{d[2 + 3 * k]}.{d[3 + 3 * k]}" for k in range(n)}}
+    return {}
+
+
+INTERPRETERS = {48: _i048, 62: _i062, 21: _i021, 1: _i001, 2: _i_service, 34: _i_service, 247: _i247}
 
 
 # ------------------------------------------------------------------ decodare

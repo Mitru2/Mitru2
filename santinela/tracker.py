@@ -282,6 +282,15 @@ class Tracker:
         tr._logged_status = CONFIRMED
         self._log(self.now, "confirmare", track=track_id, rule=rule, author=author)
 
+    def set_identity(self, track_id: str, identity: str, author: str, reason: str = "") -> None:
+        """Identitatea APP-6 a traseului (ex. 'ostil'), decizie de operator, trecuta in jurnal."""
+        from .trackmodel import IDENTITIES
+        if identity not in IDENTITIES:
+            raise ValueError(f"identitate necunoscuta {identity}; posibile: {', '.join(IDENTITIES)}")
+        tr = self.tracks[track_id]
+        tr.identity_override, tr.identity_author = identity, author
+        self._log(self.now, "identitate", track=track_id, identity=identity, author=author, reason=reason)
+
     def resolve(self, track_id: str, true_track: bool, author: str) -> None:
         """Verdict final pe traseu: actualizeaza increderea si modelul de eroare al observatorilor."""
         tr = self.tracks[track_id]

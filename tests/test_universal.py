@@ -74,7 +74,7 @@ def test_cat062_hand_built_record_auto_site():
     assert len(out) == 1 and isinstance(out[0], RadarTrackReport)
     assert out[0].t == pytest.approx(5.0)
     st = ad.sources["SAC2/SIC5"]
-    assert st.site == "SIS-2-5" and "acceptata automat" in st.notes[0]
+    assert st.site == "SIS-2-5" and any("acceptata automat" in n for n in st.notes)
     assert any("altitudinea minima" in n for n in st.needs)
 
 
@@ -319,3 +319,25 @@ def test_mixed_stream_one_target_one_confirmed_track():
     assert len(confirmed) == 1
     assert confirmed[0].sources == {"R1", "cuas"}
     assert len(confirmed[0].measurements) >= 30
+
+
+def test_asterix_edition_from_cat247_and_profile():
+    from santinela.asterix import encode_block as enc
+    # CAT247: SAC/SIC 1/7 declara CAT048 1.32 si CAT021 0.26
+    rec = bytes([0x90, 1, 7, 2, 48, 1, 32, 21, 0, 26])
+    cat247 = bytes([247]) + struct.pack(">H", 3 + len(rec)) + rec
+    lat, lon = ll(0.0, 0.0)
+    ad = UniversalAdapter(sites=[RadarSite("R1", lat, lon, sac=1, sic=7)], frame=FR, tod_ref=TOD0)
+    plot = enc([{"sac": 1, "sic": 7, "tod": TOD0 + 1, "range_m": 5000.0, "azimuth_deg": 10.0}])
+    out = ad.feed(cat247 + plot)
+    assert len(out) == 1
+    assert ad.asterix_editions[(1, 7)] == {48: "1.32", 21: "0.26"}
+    adsb = enc([{"sac": 1, "sic": 7, "icao": "4B0001", "lat_hr": 45.3, "lon_hr": 28.4, "tod_073": TOD0}], cat=21)
+    ad.feed(adsb)
+    assert not ad.cooperative                        # CAT021 0.26: editie nesuportata, oprita
+    assert any("CAT021 0.26 nu e suportata" in r for r in ad.requirements())
+    # editie declarata in configurare, diferita de referinta: acceptata cu nota
+    ad2 = UniversalAdapter(sites=[RadarSite("R2", lat, lon, sac=2, sic=1, asterix_editions={48: "1.27"})],
+                           frame=FR, tod_ref=TOD0)
+    assert len(ad2.feed(enc([{"sac": 2, "sic": 1, "tod": TOD0, "range_m": 5000.0, "azimuth_deg": 1.0}]))) == 1
+    assert any("1.27 (referinta 1.32)" in n for n in ad2.sources["SAC2/SIC1"].notes)

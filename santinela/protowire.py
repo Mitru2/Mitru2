@@ -32,12 +32,17 @@ class FieldDef:
     type: str
     repeated: bool = False
     map_kv: tuple | None = None   # (tip cheie, tip valoare) pentru map<>
+    mandatory: bool = False       # optiuni SAPIENT: (field_options) = {is_mandatory, is_uuid, is_ulid}
+    uuid: bool = False
+    ulid: bool = False
+    oneof: str | None = None
 
 
 @dataclass
 class MessageDef:
     full: str
     fields: dict = field(default_factory=dict)  # numar -> FieldDef
+    oneofs: dict = field(default_factory=dict)  # nume -> obligatoriu (bool)
 
 
 @dataclass
@@ -82,15 +87,27 @@ class ProtoSchema:
                 pkg = toks[i + 1]
                 i += 3
             elif t in ("syntax", "import", "option", "edition"):
-                while toks[i] != ";":
-                    i += 1
-                i += 1
+                i = self._skip_statement(toks, i)
             elif t in ("message", "enum"):
                 i = self._block(toks, i, pkg)
-            elif t == "service":
+            elif t in ("service", "extend"):
                 i = self._skip_block(toks, i + 2)
             else:
                 i += 1
+
+    @staticmethod
+    def _skip_statement(toks, i) -> int:
+        """Pana la ';' de la acelasi nivel (optiunile pot contine { ... })."""
+        depth = 0
+        while i < len(toks):
+            if toks[i] in ("{", "["):
+                depth += 1
+            elif toks[i] in ("}", "]"):
+                depth -= 1
+            elif toks[i] == ";" and depth <= 0:
+                return i + 1
+            i += 1
+        return i
 
     def _skip_block(self, toks, i) -> int:
         depth = 0
@@ -115,17 +132,16 @@ class ProtoSchema:
             vals = {}
             while toks[i] != "}":
                 if toks[i] in ("option", "reserved"):
-                    while toks[i] != ";":
-                        i += 1
+                    i = self._skip_statement(toks, i)
+                    continue
+                if toks[i] == ";":
                     i += 1
                     continue
                 vname = toks[i]
                 neg = toks[i + 2] == "-"
                 num = int(toks[i + 3] if neg else toks[i + 2])
                 vals.setdefault(-num if neg else num, vname)
-                while toks[i] != ";":
-                    i += 1
-                i += 1
+                i = self._skip_statement(toks, i)
             self.enums[full] = vals
             return i + 1
         msg = MessageDef(full)
@@ -135,26 +151,32 @@ class ProtoSchema:
             if t in ("message", "enum"):
                 i = self._block(toks, i, full)
             elif t == "oneof":
+                oname = toks[i + 1]
+                msg.oneofs[oname] = False
                 i += 3  # oneof nume {
                 while toks[i] != "}":
                     if toks[i] == "option":
-                        while toks[i] != ";":
-                            i += 1
+                        j = self._skip_statement(toks, i)
+                        if "is_mandatory" in toks[i:j] and toks[toks.index("is_mandatory", i) + 1] == "true":
+                            msg.oneofs[oname] = True
+                        i = j
+                        continue
+                    if toks[i] == ";":
                         i += 1
                         continue
-                    i = self._field(toks, i, msg, full)
+                    i = self._field(toks, i, msg, full, oneof=oname)
+                i += 1
+            elif t == ";":
                 i += 1
             elif t in ("option", "reserved", "extensions"):
-                while toks[i] != ";":
-                    i += 1
-                i += 1
+                i = self._skip_statement(toks, i)
             elif t == "extend":
                 i = self._skip_block(toks, i + 2)
             else:
                 i = self._field(toks, i, msg, full)
         return i + 1
 
-    def _field(self, toks, i, msg: MessageDef, scope) -> int:
+    def _field(self, toks, i, msg: MessageDef, scope, oneof: str | None = None) -> int:
         repeated = False
         if toks[i] in ("optional", "required"):
             i += 1
@@ -168,10 +190,19 @@ class ProtoSchema:
         else:
             typ, name, num = toks[i], toks[i + 1], int(toks[i + 3])
             fd = FieldDef(name, num, typ if typ in SCALARS else f"@{scope}|{typ}", repeated)
+        fd.oneof = oneof
+        end = self._skip_statement(toks, i)
+        opts = toks[i:end]
+        for k in range(len(opts) - 1):
+            if opts[k + 1] == "true":
+                if opts[k] == "is_mandatory":
+                    fd.mandatory = True
+                elif opts[k] == "is_uuid":
+                    fd.uuid = True
+                elif opts[k] == "is_ulid":
+                    fd.ulid = True
         msg.fields[fd.number] = fd
-        while toks[i] != ";":
-            i += 1
-        return i + 1
+        return end
 
     def resolve(self) -> None:
         """Rezolva numele de tipuri relative (ca in protoc: din domeniul cel mai interior spre exterior)."""
@@ -291,6 +322,16 @@ class ProtoSchema:
             return struct.unpack("<i", payload)[0]
         raise ProtoError(f"tip {typ}")
 
+    def encode(self, message: str, d: dict) -> bytes:
+        """Mesaj binar din dictionar (nume de campuri ca in .proto; enumerari prin nume sau numar)."""
+        full = message if message in self.messages else self.find(message)
+        return _schema_encode(self, self.messages[full], d)
+
+    def validate(self, message: str, d: dict) -> list[str]:
+        """Abaterile de la optiunile SAPIENT: campuri obligatorii, oneof obligatorii, UUID, ULID."""
+        full = message if message in self.messages else self.find(message)
+        return _schema_validate(self, self.messages[full], d, full.rsplit(".", 1)[-1])
+
     def _packed(self, typ, payload) -> list:
         out, i = [], 0
         b = memoryview(payload)
@@ -303,6 +344,103 @@ class ProtoSchema:
                 raw, i = _varint(b, i)
                 out.append(self._value(typ, 0, raw, None))
         return out
+
+
+# ------------------------------------------------------------------ codare si validare dupa schema
+def _zigzag(v: int) -> int:
+    return (v << 1) ^ (v >> 63)
+
+
+def _enc_scalar(sch: "ProtoSchema", typ: str, v) -> tuple[int, bytes]:
+    """(tip de transmisie, octeti) pentru o valoare scalara sau enumerare."""
+    if typ in sch.enums:
+        if isinstance(v, str):
+            inv = {name: num for num, name in sch.enums[typ].items()}
+            if v not in inv:
+                raise ProtoError(f"valoare de enumerare necunoscuta {v} pentru {typ}")
+            v = inv[v]
+        return 0, encode_varint(int(v))
+    if typ == "bool":
+        return 0, encode_varint(1 if v else 0)
+    if typ in ("int32", "int64", "uint32", "uint64"):
+        return 0, encode_varint(int(v))
+    if typ in ("sint32", "sint64"):
+        return 0, encode_varint(_zigzag(int(v)))
+    if typ == "double":
+        return 1, struct.pack("<d", float(v))
+    if typ == "float":
+        return 5, struct.pack("<f", float(v))
+    if typ == "fixed64":
+        return 1, struct.pack("<Q", int(v))
+    if typ == "sfixed64":
+        return 1, struct.pack("<q", int(v))
+    if typ == "fixed32":
+        return 5, struct.pack("<I", int(v))
+    if typ == "sfixed32":
+        return 5, struct.pack("<i", int(v))
+    if typ in ("string", "bytes"):
+        b = v.encode("utf-8") if isinstance(v, str) else bytes(v)
+        return 2, encode_varint(len(b)) + b
+    raise ProtoError(f"tip {typ}")
+
+
+def _schema_encode(sch: "ProtoSchema", msg: MessageDef, d: dict) -> bytes:
+    by_name = {f.name: f for f in msg.fields.values()}
+    out = bytearray()
+    for key in d:
+        if key not in by_name:
+            raise ProtoError(f"{msg.full}: camp necunoscut {key}")
+    for fd in sorted(msg.fields.values(), key=lambda f: f.number):
+        if fd.name not in d or d[fd.name] is None:
+            continue
+        v = d[fd.name]
+        if fd.type == "map":
+            for k, val in v.items():
+                entry = MessageDef("map", {1: FieldDef("key", 1, fd.map_kv[0]), 2: FieldDef("value", 2, fd.map_kv[1])})
+                b = _schema_encode(sch, entry, {"key": k, "value": val})
+                out += encode_varint(fd.number << 3 | 2) + encode_varint(len(b)) + b
+            continue
+        vals = v if fd.repeated else [v]
+        if fd.type in sch.messages:
+            for item in vals:
+                b = _schema_encode(sch, sch.messages[fd.type], item)
+                out += encode_varint(fd.number << 3 | 2) + encode_varint(len(b)) + b
+        elif fd.repeated and fd.type not in ("string", "bytes"):
+            body = b"".join(_enc_scalar(sch, fd.type, x)[1] for x in vals)  # "packed" (implicit in proto3)
+            out += encode_varint(fd.number << 3 | 2) + encode_varint(len(body)) + body
+        else:
+            for item in vals:
+                wt, b = _enc_scalar(sch, fd.type, item)
+                out += encode_varint(fd.number << 3 | wt) + b
+    return bytes(out)
+
+
+_ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _schema_validate(sch: "ProtoSchema", msg: MessageDef, d: dict, path: str) -> list[str]:
+    issues = []
+    for fd in msg.fields.values():
+        p = f"{path}.{fd.name}"
+        present = fd.name in d and d[fd.name] not in (None, [], "")
+        if fd.mandatory and not present and fd.oneof is None:
+            issues.append(f"{p}: camp obligatoriu lipsa")
+        if not present:
+            continue
+        vals = d[fd.name] if fd.repeated and isinstance(d[fd.name], list) else [d[fd.name]]
+        for k, v in enumerate(vals):
+            pk = f"{p}[{k}]" if fd.repeated else p
+            if fd.ulid and not (isinstance(v, str) and _ULID.match(v)):
+                issues.append(f"{pk}: nu e ULID valid ({v!r})")
+            if fd.uuid and not (isinstance(v, str) and _UUID.match(v)):
+                issues.append(f"{pk}: nu e UUID valid ({v!r})")
+            if fd.type in sch.messages and isinstance(v, dict):
+                issues += _schema_validate(sch, sch.messages[fd.type], v, pk)
+    for oname, mandatory in msg.oneofs.items():
+        if mandatory and not any(f.oneof == oname and f.name in d for f in msg.fields.values()):
+            issues.append(f"{path}: niciun camp din oneof obligatoriu '{oname}'")
+    return issues
 
 
 def _varint(buf, i: int) -> tuple[int, int]:
