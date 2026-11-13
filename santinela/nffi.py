@@ -49,6 +49,17 @@ def parse_dtg(v: str) -> float | None:
     return dt.hour * 3600 + dt.minute * 60 + dt.second + dt.microsecond * 1e-6
 
 
+def variant(text: str) -> str:
+    """'nffi-1.3' | 'nffi-1.4' | 'nffi' (XML, versiune nedeclarata) | 'ffi-mtf' (APP-11, text) | ''."""
+    t = text.lstrip()
+    if re.match(r"^(EXER|OPER)/", t) or re.search(r"^MSGID/FFI", t, re.M):
+        return "ffi-mtf"
+    m = re.search(r'(?:nffi[:/]|version=")(\d\.\d)', t, re.I)
+    if m and m.group(1) in ("1.3", "1.4"):
+        return f"nffi-{m.group(1)}"
+    return "nffi" if looks_like_nffi(t) else ""
+
+
 def looks_like_nffi(text: str) -> bool:
     return bool(re.search(r"<(\w+:)?(NFFI|FFI|FriendlyForce)", text)) and "atitude" in text
 

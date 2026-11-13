@@ -46,11 +46,20 @@ TARGET_FIELDS = [
     ("D32.14", "height_unc_m", "I", 1), ("D32.15", "los_velocity_unc_cms", "I", 2),
     ("D32.16", "truth_tag_app", "I", 1), ("D32.17", "truth_tag_entity", "I", 4), ("D32.18", "rcs_half_dbsm", "S", 1),
 ]
-CLASSIFICATION = {  # D32.10, valori principale (se completeaza din AEDP-7)
-    0: "fara informatie (live)", 1: "vehicul cu roti (live)", 2: "vehicul pe senile (live)",
-    3: "vehicul cu roti sau senile (live)", 4: "elicopter (live)", 5: "elicopter (live)",
-    6: "aeronava (live)", 126: "nespecificat (live)", 127: "nespecificat (simulat)",
+CLASSIFICATION = {  # D32.10 (conventia 'stanag4607.classification'); NU exista clasa UAS
+    0: "fara informatie", 1: "vehicul pe senile", 2: "vehicul cu roti", 3: "aeronava cu aripa rotativa",
+    4: "aeronava cu aripa fixa", 5: "rotator stationar", 6: "maritim", 7: "baliza", 8: "amfibiu",
+    9: "persoana", 10: "vehicul", 11: "animal", 12: "retur multiplu mare (sol)",
+    13: "retur multiplu mare (maritim)", 126: "altul", 127: "necunoscut",
 }
+
+
+def classification(code: int) -> tuple[str, bool]:
+    """(eticheta, simulat). Valorile 128-255 sunt aceleasi clase marcate simulat (254 altul, 255 necunoscut)."""
+    if code >= 128:
+        base = {254: 126, 255: 127}.get(code, code - 128)
+        return CLASSIFICATION.get(base, f"cod {code}"), True
+    return CLASSIFICATION.get(code, f"cod {code}"), False
 
 
 class Stanag4607Error(ValueError):

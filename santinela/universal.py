@@ -32,6 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import adsb as adsbmod
 from . import cot as cotmod
 from . import nffi as nffimod
 from . import remoteid as ridmod
@@ -63,6 +64,10 @@ class CooperativeReport:
     vy: float | None = None
     callsign: str | None = None
     source: str = "ADS-B"
+    operator_lat: float | None = None   # Remote ID: pozitia operatorului (mesajul System)
+    operator_lon: float | None = None
+    operator_id: str | None = None
+    self_id: str | None = None
 
 
 @dataclass
@@ -109,11 +114,15 @@ def detect_format(data) -> str:
             return "asterix"
         if looks_like_4607(data):
             return "stanag4607"
+        if adsbmod.looks_like_beast(data):
+            return "beast"
         # SAPIENT pe TCP: fiecare mesaj protobuf precedat de 4 octeti cu lungimea lui
         if _length_framed(bytes(data), "little") or _length_framed(bytes(data), "big"):
             return "sapient-protobuf"
         if looks_like_remoteid(data):
             return "remoteid"
+        if ridmod.looks_like_radio_frame(data):
+            return "remoteid-radio"
         try:
             text = bytes(data).decode("utf-8")
         except UnicodeDecodeError:
@@ -127,6 +136,12 @@ def detect_format(data) -> str:
     s = text.lstrip("﻿ \t\r\n")
     if s.startswith(("$", "!")):
         return "nmea"
+    if s.startswith("MSG,"):
+        return "sbs"
+    if nffimod.variant(s) == "ffi-mtf":
+        return "ffi-mtf"
+    if re.match(r"^[*@][0-9A-Fa-f]{14,40};", s):
+        return "avr"
     if s.startswith("<"):
         if looks_like_cot(s):
             return "cot"
@@ -137,7 +152,11 @@ def detect_format(data) -> str:
         objs = _json_objects(s)
         if objs is None:
             return "necunoscut"
-        return "sapient-json" if any(_is_sapient(o) for o in objs) else "json"
+        if any(_is_sapient(o) for o in objs):
+            return "sapient-json"
+        if any(isinstance(o, dict) and isinstance(o.get("aircraft"), list) for o in objs):
+            return "readsb"
+        return "json"
     return "necunoscut"
 
 
@@ -369,6 +388,10 @@ class UniversalAdapter:
     drop_non_drone_classes: tuple = ("bird", "pasare", "human", "person", "vehicle", "car")
     min_class_confidence: float = 0.8
     adsb_registration: bool = True
+    adsb_receiver: tuple | None = None                  # (lat, lon) receptor 1090, pentru CPR local
+    opportunity_gate_m: float = 1500.0                  # plot radar langa o aeronava ADS-B -> cooperativ
+    gmti_max_speed: float = 235.0                       # m/s; wrap mai mic decat dublul ei -> Doppler ambiguu
+    opportunity_min_alt_m: float = 300.0                # doar aeronave peste aceasta inaltime
 
     def __post_init__(self):
         if self.frame is None:
@@ -387,6 +410,8 @@ class UniversalAdapter:
         self._declared: dict[str, str] = {}             # sursa -> format declarat
         self._last_full_tod: dict = {}                  # (sac, sic) -> ultima ora completa (CAT002/034)
         self.asterix_editions: dict = {}                # (sac, sic) -> {categorie: "x.y"} din CAT247
+        ref = self.adsb_receiver if self.adsb_receiver else (self.frame.lat0, self.frame.lon0)
+        self._modes = adsbmod.ModeSDecoder(ref_latlon=ref)
         self.sapient_nodes: dict = {}                       # profil pe nod (din Registration)
         self.sapient_deviations = defaultdict(list)         # abateri de la standard, pe nod
         self.sapient_alerts: list = []
@@ -519,11 +544,22 @@ class UniversalAdapter:
                 out = []
             elif fmt == "stanag4607":
                 out = self._gmti(bytes(data), received_at)
+            elif fmt in ("beast", "avr", "sbs", "readsb"):
+                out = self._adsb_raw(fmt, data, received_at, source or f"ADS-B-{fmt}")
             elif fmt == "remoteid":
                 out = self._remoteid(bytes(data), received_at, source or "RemoteID")
+            elif fmt == "remoteid-radio":
+                out = []
+                for carrier, payload in ridmod.extract(bytes(data)):
+                    out += self._remoteid(payload, received_at, source or f"RemoteID-{carrier}")
             elif fmt == "cot":
                 out = self._cot(data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data,
                                 received_at, source or "CoT")
+            elif fmt == "ffi-mtf":
+                st = self._status(source or "FFI-MTF", fmt)
+                st.need("FFI MTF (APP-11, ADatP-36 / FMN Spiral 5): specificatia are distributie controlata; "
+                        "cereti gateway-ului FFT iesire NFFI XML sau CoT, ori un decodor din mediul acreditat")
+                out = []
             elif fmt == "nffi":
                 self._nffi(data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data,
                            source or "NFFI")
@@ -705,6 +741,17 @@ class UniversalAdapter:
         for p in self._cat048.cooperative_plots[n_coop:]:
             if p.icao:
                 self._pending_pairs[p.sensor_id].append(p)
+        kept = []
+        for it in items:
+            icao = self._opportunity(it, site) if isinstance(it, RadarPlot) else None
+            if icao is None:
+                kept.append(it)
+                continue
+            it.icao, it.cooperative = icao, True   # tinta de oportunitate: avion ADS-B
+            self._pending_pairs[it.sensor_id].append(it)
+            st.note("plot-uri primare potrivite cu aeronave ADS-B: excluse din trackerul de drone, "
+                    "folosite la inregistrarea radarului")
+        items = kept
         if "doppler_mps" in rec:
             st.note("Doppler prezent: confirmati conventia de semn (pozitiv = departare)")
         st.accepted += len(items)
@@ -855,17 +902,102 @@ class UniversalAdapter:
                 w = np.array([-u[1], u[0]])
                 R = np.outer(u, u) * s_r ** 2 + np.outer(w, w) * s_c ** 2
                 rr = tg.get("los_velocity_cms")
+                wrap = tg.get("wrap_velocity_cms")
+                if rr is not None and wrap and wrap / 100.0 < 2 * self.gmti_max_speed:
+                    # viteza poate fi ambigua cu +/- wrap: nu o folosim in filtru, doar pozitia
+                    st.note("viteza pe linia de vizare ambigua (wrap velocity mica): neutilizata in filtru")
+                    rr = None
                 cls = tg.get("classification")
+                if cls is not None:
+                    label, simulated = stanag4607.classification(int(cls))
+                    if simulated:
+                        st.note("tinte marcate SIMULATE in clasificarea D32.10")
+                    if int(cls) % 128 in (3, 4):
+                        st.note("clasificare 'aeronava' (3/4): indiciu slab, STANAG 4607 nu are clasa UAS")
                 out.append(SensorDetection(
                     f"{key}:{dw.fields.get('revisit_index', 0):.0f}:{dw.fields.get('dwell_index', 0):.0f}:{k}",
                     key, t, tg["lat"], tg["lon"], R,
-                    drone_class=None if cls is None else stanag4607.CLASSIFICATION.get(int(cls)),
+                    drone_class=None,  # clasa 4607 nu e o clasa de drona (fara UAS in tabel)
                     pd=site.pd, lambda_fa=site.lambda_fa, received_at=received_at,
                     altitude_m=tg.get("height_m"), rr=None if rr is None else rr / 100.0,
                     rr_sigma=(tg.get("los_velocity_unc_cms", 0) / 100.0) or 1.0,
                     sensor_lat=f["sensor_lat"], sensor_lon=f["sensor_lon"]))
                 st.accepted += 1
         return out
+
+    # ---------- ADS-B direct ----------
+    def _adsb_raw(self, fmt: str, data, received_at, source) -> list:
+        st = self._status(source, fmt)
+        st.site = "ADS-B"
+        st.note("aeronave cooperative: calibreaza radarele si exclud ecourile de avioane din trackerul de drone")
+        t_now = received_at if received_at is not None else 0.0
+        n0 = len(self.cooperative)
+        if fmt in ("beast", "avr"):
+            if fmt == "beast":
+                msgs = [m for typ, m in adsbmod.iter_beast(bytes(data)) if typ in (0x33, 0x34)]
+            else:
+                text = data.decode("ascii", "replace") if isinstance(data, (bytes, bytearray)) else data
+                msgs = list(adsbmod.parse_avr(text))
+            if received_at is None:
+                st.need("ora de sosire (received_at): mesajele Beast/AVR nu au ora absoluta")
+            for m in msgs:
+                state = self._modes.decode(m, t_now)
+                if state is not None:
+                    self._coop_from_state(state, t_now)
+            if self._modes.bad_crc:
+                st.note(f"mesaje cu CRC gresit ignorate: {self._modes.bad_crc}")
+        elif fmt == "sbs":
+            text = data.decode("ascii", "replace") if isinstance(data, (bytes, bytearray)) else data
+            for rec in adsbmod.parse_sbs(text):
+                self._coop_from_rec(rec, received_at)
+        else:  # readsb aircraft.json
+            for o in self._objs(data):
+                for rec in adsbmod.parse_aircraft_json(o):
+                    rec["tod"] = parse_time_tod(rec.pop("epoch"), "epoch")
+                    self._coop_from_rec(rec, received_at)
+        st.accepted += len(self.cooperative) - n0
+        return []
+
+    def _coop_from_state(self, s, t) -> None:
+        vx = vy = None
+        if s.speed_kt is not None and s.track_deg is not None:
+            h = math.radians(s.track_deg)
+            vx, vy = s.speed_kt * adsbmod.KT * math.sin(h), s.speed_kt * adsbmod.KT * math.cos(h)
+        self._add_coop(CooperativeReport(s.icao, t, s.lat, s.lon,
+                                         s.alt_ft * adsbmod.FT if s.alt_ft is not None else None,
+                                         vx, vy, s.callsign, source="ADS-B"))
+
+    def _coop_from_rec(self, rec: dict, received_at) -> None:
+        st = self._modes.state.setdefault(rec["icao"], adsbmod.AdsbState(rec["icao"]))
+        for k in ("speed_kt", "track_deg", "alt_ft", "callsign"):
+            if rec.get(k) is not None:
+                setattr(st, k, rec[k])
+        if rec.get("lat") is None:
+            return
+        st.lat, st.lon = rec["lat"], rec["lon"]
+        t = round(tod_to_t(rec["tod"], self.tod_ref), 4) if rec.get("tod") is not None else received_at
+        self._coop_from_state(st, t)
+
+    def _opportunity(self, plot, site) -> str | None:
+        """Aeronava ADS-B (peste inaltimea minima) aflata in poarta unui plot radar fara transponder."""
+        if not self._adsb:
+            return None
+        az = math.radians(plot.azimuth_deg)
+        r = plot.range_m
+        p = site.center + r * np.array([math.sin(az), math.cos(az)])
+        best, best_d = None, self.opportunity_gate_m
+        for icao, hist in self._adsb.items():
+            c = hist[-1]
+            dt = plot.t - c.t
+            if abs(dt) > 5.0 or (c.height_m or 0.0) < self.opportunity_min_alt_m:
+                continue
+            if c.vx is None and abs(dt) > 1.5:
+                continue  # fara viteza, doar mesaje aproape simultane
+            q = self.frame.to_xy(c.lat, c.lon) + (np.array([c.vx, c.vy]) * dt if c.vx is not None else 0.0)
+            d = float(np.linalg.norm(q - p))
+            if d < best_d:
+                best, best_d = icao, d
+        return best
 
     # ---------- Remote ID ----------
     def _remoteid(self, buf: bytes, received_at, source) -> list:
@@ -881,8 +1013,15 @@ class UniversalAdapter:
             if loc.speed is not None and loc.direction is not None:
                 h = math.radians(loc.direction)
                 vx, vy = loc.speed * math.sin(h), loc.speed * math.cos(h)
-            self._add_coop(CooperativeReport(loc.uas_id or f"RID-{source}", round(tod_to_t(tod, self.tod_ref), 4),
-                                             loc.lat, loc.lon, loc.alt_geo, vx, vy, source="RemoteID"))
+            c = CooperativeReport(loc.uas_id or f"RID-{source}", round(tod_to_t(tod, self.tod_ref), 4),
+                                  loc.lat, loc.lon, loc.alt_geo, vx, vy, source="RemoteID")
+            c.operator_lat, c.operator_lon = loc.operator_lat, loc.operator_lon
+            c.operator_id, c.self_id = loc.operator_id, loc.self_id
+            self._add_coop(c)
+            if loc.operator_lat is not None:
+                st.note("mesaj System: pozitia operatorului e disponibila (operator_lat/lon)")
+            if loc.auth_present:
+                st.note("mesaj Authentication prezent: NU e verificat criptografic")
             st.accepted += 1
         st.note("drone cooperative (Remote ID): marcheaza traseele potrivite, nu intra ca tinte")
         return []
@@ -934,6 +1073,9 @@ class UniversalAdapter:
     # ---------- NFFI ----------
     def _nffi(self, text: str, source) -> None:
         st = self._status(source, "nffi")
+        v = nffimod.variant(text)
+        st.note(f"varianta {v or 'nffi'}" + ("" if v in ("nffi-1.3", "nffi-1.4") else
+                                             " (versiune nedeclarata: verificati schema XSD a sursei)"))
         for fp in nffimod.parse(text, source):
             self.friendly[fp.unit_id] = fp
             st.accepted += 1

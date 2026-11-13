@@ -10,7 +10,7 @@ Totul este explicabil și reproductibil: aceleași intrări dau aceleași ieșir
 
 ```bash
 pip install -e '.[test]'
-python -m pytest                                        # 97 de teste, ~20 s
+python -m pytest                                        # 125 de teste, ~20 s
 python -m santinela.cli --scenario dunare --out out/    # scenariul „Dunăre” (cu radar, detecții)
 python -m santinela.cli --scenario dunare --radar-mode tracks --out out/tr   # radarul trimite trasee
 python -m santinela.cli --scenario val --out out/val    # val dens de 12 ținte
@@ -120,27 +120,59 @@ ghicite. Captura PCAP nu e citită direct: se extrage întâi conținutul UDP/TC
 
 ## Standarde NATO și conexe
 
-| Standard | Ce e | Stare | Ce intră în sistem |
-|---|---|---|---|
-| **SAPIENT** (BSI Flex 335 v2, adoptat de NATO pentru C-UAS) | senzori anti-dronă | ✅ JSON și **binar** | detecții, trasee; poziția nodului din `statusReport` |
-| **STANAG 4607** (AEDP-7) | GMTI, radare de supraveghere | ✅ | detecții cu viteză pe linia de vizare (Doppler) |
-| **ASTERIX** CAT048, CAT062, CAT021 | radar, trasee de sistem, ADS-B (folosit în NATINAMDS/ACCS) | ✅ | detecții, trasee, calibrare pe ADS-B |
-| **ASTERIX** CAT001, CAT002, CAT034 | formate radar vechi, mesaje de serviciu | ✅ | plot-uri/trasee; ora completă și **poziția radarului** din I034/120 |
-| **Cursor-on-Target** (MIL-STD-2525 / APP-6) | TAK/ATAK | ✅ intrare **și ieșire** | ținte aeriene, poziții proprii; `out/cot.xml` pentru ATAK |
-| **NFFI** (STANAG 5527) | forțe proprii | ✅ | pozițiile echipelor, strat separat pe hartă |
-| **Remote ID** (ASTM F3411 / EN 4709-002) | drone cooperative | ✅ | marchează traseele identificate (`annotate_tracks`) |
-| **Link 16** (STANAG 5516 / MIL-STD-6016), **JREAP** (STANAG 5518 / MIL-STD-3011), **Link 11/22**, **VMF**, **OTH-Gold**, **ADatP-3** | legături de date tactice | 🔒 interfață pregătită | prin `register_decoder()`, după specificația oficială |
+### Normalizare semantică
 
-- **SAPIENT binar**: `UniversalAdapter(sapient_proto_dir="…")` citește definițiile oficiale `.proto`
-  (publicate de Dstl) cu un decodor protobuf propriu, fără dependențe. Fără ele, raportul cere directorul.
-- **Legături de date cu distribuție controlată**: specificațiile (MIL-STD-6016, MIL-STD-3011 etc.) nu
-  sunt publice și nu au fost reproduse. Sursa se declară cu `declare_source("GW-L16", "link16")`;
-  până la înregistrarea decodorului, `requirements()` spune ce lipsește. Decodorul se scrie în mediul
-  acreditat și întoarce aceleași obiecte (`RadarTrackReport`, `SensorDetection`), deci restul
-  sistemului nu se schimbă.
-- Toate decodoarele sunt scrise după specificațiile publice și verificate doar pe date construite în
-  teste; înainte de utilizare se validează pe înregistrări reale de la fiecare echipament (ediția UAP
-  ASTERIX, semnul vitezei radiale în STANAG 4607, tabelul de clasificare, schema NFFI folosită).
+Decodoarele se bazează pe convenții scrise într-un singur loc, `santinela/conventions.py`, fiecare cu
+statut și sursă: **verificat** (citit din sursa oficială), **raport** (din raportul de
+interoperabilitate din 13.11.2026, care citează sursa) sau **presupus** (de confirmat).
+`python -m santinela.cli --conventions` le afișează. Cele patru întrebări deschise:
+
+| Convenție | Valoare | Statut |
+|---|---|---|
+| SAPIENT `Location.x` | longitudine (LAT_LNG), est (UTM) | verificat în `location.proto` oficial |
+| STANAG 4607 D32.7 | cm/s, corectată pentru mișcarea platformei, pozitivă la depărtare | raport (AEDP-7 prin DTIC) |
+| Ediția ASTERIX | detectată din CAT247 sau declarată per SAC/SIC; majora trebuie să coincidă cu tabelele | raport (CAT048 1.32, CAT062 1.21, CAT021 2.7, CAT034 1.29) |
+| NFFI / FFT | NFFI XML 1.3/1.4 citit; FFI MTF (APP-11) recunoscut, cere gateway | raport (ADatP-36, FMN Spiral 5) |
+
+### Ce e implementat
+
+| Standard | Stare | Ce face |
+|---|---|---|
+| **SAPIENT** BSI Flex 335 v2.0 (baza AEDP-4869) | ✅ **bidirecțional** | nod de fuziune: Registration/Ack, Status, Detection, Alert/Ack, Task (`look_at`)/TaskAck, Error; nod-copil spre un nod superior; TCP cu prefix de lungime |
+| **ASTERIX** CAT048/062/021, CAT001/002/034, **CAT247** | ✅ | ediție per sursă; poziția radarului din I034/120 |
+| **ADS-B direct** (Beast, AVR, SBS, readsb JSON) | ✅ | Mode S DF17/18 cu CRC și CPR; ținte de oportunitate pentru calibrarea radarelor |
+| **Remote ID** (ASTM F3411 / EN 4709-002) | ✅ | Bluetooth 4/5, Wi-Fi Beacon, Wi-Fi NAN; poziția operatorului (System) |
+| **Cursor-on-Target** + **TAK Protocol v1** | ✅ intrare și ieșire | UID stabil, elipsă 95 %, `stale`, ștergere; UDP multicast 239.2.3.1:6969, TCP, TLS |
+| **APP-6D / MIL-STD-2525D** | ✅ | identitate și SIDC de 20 de cifre; „ostil” doar prin decizia operatorului |
+| **STANAG 4607** | ✅ | tabelul de clasificare corectat (fără clasă UAS); Doppler ambiguu (wrap) neutilizat |
+| **NFFI** (STANAG 5527 / ADatP-36) | ✅ XML | poziții proprii; FFI MTF semnalat |
+
+**SAPIENT** se validează pe definițiile oficiale Dstl, care nu sunt incluse în proiect (licența lor nu a
+putut fi confirmată):
+
+```bash
+python -m santinela.cli --fetch-sapient sapient_proto          # descarcă și verifică amprentele SHA-256
+python -m santinela.cli --sapient-server 5020 --sapient-proto sapient_proto
+SANTINELA_SAPIENT_PROTO=sapient_proto python -m pytest          # + testele pe schema oficială
+```
+
+Amprentele sunt fixate în `santinela/data/sapient_bsi_flex_335_v2_0.json`; dacă depozitul Dstl se
+schimbă, încărcarea se oprește până la revizuirea diferențelor. Decodorul raportează pe fiecare nod
+abaterile de la câmpurile obligatorii, UUID și ULID, dar rămâne tolerant (`strict=True` respinge).
+Registration-ul și mesajele trimise de SANTINELA trec validarea pe schema oficială fără abateri.
+
+### Legături de date cu distribuție controlată
+
+Link 16, JREAP, Link 11/22, VMF, OTH-Gold și ADatP-3 nu se implementează în afara mediului acreditat.
+Arhitectura recomandată: un **gateway acreditat** (comercial sau național) livrează spre SANTINELA
+CoT, ASTERIX CAT062 sau SAPIENT, iar SANTINELA le citește ca pe orice altă sursă. Punctul de extensie
+`declare_source()` / `register_decoder()` rămâne doar pentru un decodor scris în mediul acreditat.
+
+### Ce rămâne (P2/P3)
+
+ASTERIX CAT129/015/016/205/063/065; MISB ST 0601/0903 (EO/IR, VMTI); STANAG 4676; conversia
+HAE↔MSL cu modelul EGM; declinația magnetică automată (WMM); verificarea criptografică a
+autentificării Remote ID; validarea cu Test Harness-ul Dstl și pe capturi reale de la fiecare echipament.
 
 ## Decizii de proiectare
 

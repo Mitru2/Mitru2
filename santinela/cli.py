@@ -35,7 +35,46 @@ def main(argv: list[str] | None = None) -> int:
                     help="fisiere de captura (ASTERIX binar, NMEA, SAPIENT/JSON): recunoaste formatul si "
                          "spune ce configurare lipseste")
     ap.add_argument("--config", default=None, help="configurarea surselor (JSON) pentru --inspect")
+    ap.add_argument("--conventions", action="store_true",
+                    help="conventiile semantice folosite de decodoare, cu statutul si sursa fiecareia")
+    ap.add_argument("--fetch-sapient", metavar="DIR", default=None,
+                    help="descarca definitiile oficiale SAPIENT v2.0 si le verifica pe amprente")
+    ap.add_argument("--sapient-server", metavar="PORT", type=int, default=None,
+                    help="porneste nodul de fuziune SAPIENT (cere --sapient-proto)")
+    ap.add_argument("--sapient-proto", metavar="DIR", default=None, help="directorul cu .proto oficiale verificate")
     a = ap.parse_args(argv)
+
+    if a.conventions:
+        from .conventions import report
+        for c in report():
+            print(f"[{c['statut']:9s}] {c['cheie']}: {c['valoare']}\n            sursa: {c['sursa']}")
+        return 0
+
+    if a.fetch_sapient:
+        from .sapient_proto import fetch
+        print(f"descarcat si verificat: {fetch(a.fetch_sapient)}")
+        return 0
+
+    if a.sapient_server is not None:
+        import time as _time
+        from .sapient_node import SapientFusionNode, SapientServer
+        from .sapient_proto import load_schema
+        from .universal import UniversalAdapter
+        if not a.sapient_proto:
+            ap.error("--sapient-server cere --sapient-proto DIR (vezi --fetch-sapient)")
+        node = SapientFusionNode(load_schema(a.sapient_proto), UniversalAdapter())
+        srv = SapientServer(node, "0.0.0.0", a.sapient_server)
+        print(f"nod de fuziune SAPIENT {node.node_id} pe portul {srv.start()} (Ctrl+C pentru oprire)")
+        seen = 0
+        try:
+            while True:
+                _time.sleep(1.0)
+                for ev in node.log[seen:]:
+                    print(ev)
+                seen = len(node.log)
+        except KeyboardInterrupt:
+            srv.stop()
+        return 0
 
     if a.inspect:
         from .universal import UniversalAdapter
