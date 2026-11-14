@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from . import adsb as adsbmod
+from . import misb as misbmod
 from . import cot as cotmod
 from . import nffi as nffimod
 from . import remoteid as ridmod
@@ -116,6 +117,10 @@ def detect_format(data) -> str:
             return "stanag4607"
         if adsbmod.looks_like_beast(data):
             return "beast"
+        if misbmod.looks_like_klv(data):
+            return "klv"
+        if misbmod.looks_like_mpegts(data):
+            return "mpegts"
         # SAPIENT pe TCP: fiecare mesaj protobuf precedat de 4 octeti cu lungimea lui
         if _length_framed(bytes(data), "little") or _length_framed(bytes(data), "big"):
             return "sapient-protobuf"
@@ -544,6 +549,12 @@ class UniversalAdapter:
                 out = []
             elif fmt == "stanag4607":
                 out = self._gmti(bytes(data), received_at)
+            elif fmt in ("klv", "mpegts"):
+                packets = ([p for _, p in misbmod.iter_klv(bytes(data))] if fmt == "klv"
+                           else misbmod.klv_from_mpegts(bytes(data)))
+                out = []
+                for pkt in packets:
+                    out += self._klv(pkt, received_at, source)
             elif fmt in ("beast", "avr", "sbs", "readsb"):
                 out = self._adsb_raw(fmt, data, received_at, source or f"ADS-B-{fmt}")
             elif fmt == "remoteid":
@@ -588,7 +599,7 @@ class UniversalAdapter:
                 st = self._status(source or "necunoscut", fmt)
                 st.need("formatul nu a fost recunoscut: trimiteti un exemplu si documentul de interfata (ICD)")
                 out = []
-        except (AsterixError, Stanag4607Error, ProtoError, ValueError, KeyError, TypeError) as e:
+        except (AsterixError, Stanag4607Error, ProtoError, misbmod.KlvError, ValueError, KeyError, TypeError) as e:
             self.errors.append((fmt, str(e)))
             out = []
         self._run_registration()
@@ -1045,6 +1056,71 @@ class UniversalAdapter:
                     rr_sigma=(tg.get("los_velocity_unc_cms", 0) / 100.0) or 1.0,
                     sensor_lat=f["sensor_lat"], sensor_lon=f["sensor_lon"]))
                 st.accepted += 1
+        return out
+
+    # ---------- MISB KLV (EO/IR, STANAG 4609) ----------
+    def _klv(self, pkt: bytes, received_at, source) -> list:
+        out = []
+        if pkt[:16] == misbmod.UL_0903:
+            uas, vmti = None, misbmod.decode_0903(pkt)
+        else:
+            uas = misbmod.decode_0601(pkt)
+            vmti = uas.vmti
+        f = uas.fields if uas else {}
+        name = source or f.get("PlatformTailNumber") or f.get("PlatformDesignation") or f.get("MissionID") or "EOIR"
+        st = self._status(f"EOIR:{name}", "klv")
+        if uas is not None and uas.checksum_ok is False:
+            self.errors.append(("klv", f"{name}: suma de control ST 0601 gresita; pachet ignorat"))
+            return []
+        t_epoch = (uas.time if uas else None) or (vmti.time if vmti else None)
+        if t_epoch is None:
+            st.need("PrecisionTimeStamp (ST 0601 tag 2 / ST 0903 tag 2)")
+            return []
+        t = round(tod_to_t(parse_time_tod(t_epoch, "epoch"), self.tod_ref), 4)
+        slat, slon = f.get("SensorLatitude"), f.get("SensorLongitude")
+        key = f"EOIR-{name}"
+        if key not in self._by_name:
+            if slat is None and not (vmti and any(v.location for v in vmti.targets)):
+                st.need("pozitia senzorului (ST 0601 tag 13/14) sau tinte VMTI cu locatie")
+                return []
+            ref = (slat, slon) if slat is not None else (vmti.targets[0].location["lat"], vmti.targets[0].location["lon"])
+            self._auto_site(key, ref[0], ref[1], "senzor", st)
+            st.note("senzor EO/IR (platforma posibil mobila): fara informatie negativa")
+        site = self._by_name[key]
+        st.site = key
+        slant = f.get("SlantRange")
+        default_sigma = max(30.0, 0.01 * slant) if slant else 50.0
+
+        def det(rid, lat, lon, sig_e, sig_n, rho, alt):
+            nonlocal out
+            R = np.array([[sig_e ** 2, rho * sig_e * sig_n], [rho * sig_e * sig_n, sig_n ** 2]])
+            out.append(SensorDetection(rid, key, t, lat, lon, R, pd=site.pd, lambda_fa=site.lambda_fa,
+                                       received_at=received_at, altitude_m=alt))
+
+        tlat, tlon = f.get("TargetLocationLatitude"), f.get("TargetLocationLongitude")
+        if tlat is not None and tlon is not None:
+            ce90 = f.get("TargetErrorEstimateCE90")
+            sig = ce90 / 2.146 if ce90 else default_sigma  # CE90 = 2,146 sigma (normala circulara)
+            if not ce90:
+                st.note("tinta desemnata fara CE90: precizia presupusa din distanta oblica")
+            det(f"{key}:{t_epoch:.6f}:tinta", tlat, tlon, sig, sig, 0.0, None)
+            st.note("tinta desemnata ST 0601 (tag 40-42): inaltimea tag 42 e fata de nivelul marii")
+        if vmti is not None:
+            fcl, fco = f.get("FrameCenterLatitude"), f.get("FrameCenterLongitude")
+            for vt in vmti.targets:
+                rid = f"{key}:{t_epoch:.6f}:vmti{vt.target_id}"
+                if vt.location and vt.location.get("lat") is not None:
+                    L = vt.location
+                    se, sn = L.get("sig_e") or default_sigma, L.get("sig_n") or default_sigma
+                    det(rid, L["lat"], L["lon"], max(se, 1.0), max(sn, 1.0), L.get("rho_en") or 0.0, L.get("hae"))
+                elif vt.offset_lat is not None and fcl is not None:
+                    det(rid, fcl + vt.offset_lat, fco + vt.offset_lon, default_sigma, default_sigma, 0.0, vt.hae)
+                    st.note("tinte VMTI ca decalaj fata de centrul cadrului (tag 10/11 + ST 0601 tag 23/24)")
+                else:
+                    st.need("tinte VMTI doar in pixeli: cer geolocatie (locatie tag 17 sau decalaje + centrul cadrului)")
+            if vmti.version is not None and vmti.version < 4:
+                st.note(f"VMTI versiunea {vmti.version}: codare veche (nu IMAPB)")
+        st.accepted += len(out)
         return out
 
     # ---------- ADS-B direct ----------

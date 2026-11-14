@@ -84,6 +84,13 @@ _C = [
                "timpi in ms (uint64)", "verificat", "descriptorii takproto 3.0.1 (MIT), citit ca date"),
     Convention("cot.ce", "ce = raza erorii circulare in metri (folosim sqrt(lambda_max) a covariantei de pozitie, ~1 sigma); "
                "9999999 = necunoscut", "presupus", "schema CoT MITRE nu fixeaza nivelul de incredere"),
+    # ---------------- MISB (STANAG 4609)
+    Convention("misb.st0601", "mapari liniare domeniu -> interval pe tag; indicator de eroare = valoarea minima "
+               "cu semn; suma de control = suma cuvintelor de 16 biti; tagurile 43/44 = x2 pixeli",
+               "verificat", "66 de exemple ST 0601.11 sectiunea 8 (prin testele klvdata, MIT)"),
+    Convention("misb.st0903", "pachet de locatie (tag 17): lat/lon IMAPB 4 o., HAE IMAPB(-900,19000,2), sigma "
+               "IMAPB(0,650,2), rho IMAPB(-1,1,2); versiunea < 4 = codare liniara veche; decalaje IMAPB(+-19.2,3)",
+               "verificat", "exemplele din anexa ST 0903 (prin testele jmisb, MIT)"),
     # ---------------- simbologie
     Convention("app6.sidc", "SIDC de 20 de cifre (MIL-STD-2525D/APP-6D); UAV = set 01 (aer), entitate 110300",
                "presupus", "MIL-STD-2525D (din memorie); de confirmat pe APP-6 nationala"),
