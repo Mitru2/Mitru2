@@ -396,6 +396,7 @@ class UniversalAdapter:
     adsb_receiver: tuple | None = None                  # (lat, lon) receptor 1090, pentru CPR local
     opportunity_gate_m: float = 1500.0                  # plot radar langa o aeronava ADS-B -> cooperativ
     gmti_max_speed: float = 235.0                       # m/s; wrap mai mic decat dublul ei -> Doppler ambiguu
+    decimal_year: float | None = None                   # pentru WMM; implicit data curenta
     opportunity_min_alt_m: float = 300.0                # doar aeronave peste aceasta inaltime
 
     def __post_init__(self):
@@ -734,7 +735,7 @@ class UniversalAdapter:
         t = round(tod_to_t(tod, self.tod_ref), 4)
         site = self._by_asterix.get(sid)
         hp = f.get("600") or {}
-        height = (f.get("601") or {}).get("GH")
+        height = (f.get("601") or {}).get("GH")  # inaltime geometrica (WGS-84), convertita mai jos
         if "P84" in hp:
             lat, lon = hp["P84"]["LATITUDE"], hp["P84"]["LONGITUDE"]
             if site is None:
@@ -771,6 +772,9 @@ class UniversalAdapter:
                 height = site.antenna_height + rng * math.sin(el)
         if "626" in f:
             st.note("I015/626 Doppler (poate fi bistatic): neutilizat in filtru")
+        if height is not None and "601" in f:
+            la, lo = self.frame.to_latlon(*(site.center + p))
+            height = self._to_msl(la, lo, float(height), st)
         hv = (f.get("602") or {}).get("HV")
         trn = f.get("161")
         status = f.get("170") or {}
@@ -1015,8 +1019,11 @@ class UniversalAdapter:
             if dw.data_kind != "real":
                 st.note(f"dwell-uri cu date {dw.data_kind} (antet P7) ignorate")
                 continue
-            if dw.geoid_model not in (None, "nespecificat"):
-                st.note(f"inaltimile D32.6 sunt fata de {dw.geoid_model} (segmentul job): neconvertite la elipsoid")
+            heights_msl = dw.geoid_model == "EGM96"
+            if heights_msl:
+                st.note("inaltimile D32.6 sunt fata de EGM96 (segmentul job): folosite ca nivelul marii")
+            if dw.geoid_model not in (None, "nespecificat", "EGM96"):
+                st.note(f"inaltimile D32.6 sunt fata de {dw.geoid_model}: folosite ca atare")
             f = dw.fields
             if key not in self._by_name:
                 self._auto_site(key, f["sensor_lat"], f["sensor_lon"], "radar", st)
@@ -1052,11 +1059,25 @@ class UniversalAdapter:
                     key, t, tg["lat"], tg["lon"], R,
                     drone_class=None,  # clasa 4607 nu e o clasa de drona (fara UAS in tabel)
                     pd=site.pd, lambda_fa=site.lambda_fa, received_at=received_at,
-                    altitude_m=tg.get("height_m"), rr=None if rr is None else rr / 100.0,
+                    altitude_m=(tg.get("height_m") if heights_msl or tg.get("height_m") is None
+                                else self._to_msl(tg["lat"], tg["lon"], float(tg["height_m"]), st)),
+                    rr=None if rr is None else rr / 100.0,
                     rr_sigma=(tg.get("los_velocity_unc_cms", 0) / 100.0) or 1.0,
                     sensor_lat=f["sensor_lat"], sensor_lon=f["sensor_lon"]))
                 st.accepted += 1
         return out
+
+    def _to_msl(self, lat: float, lon: float, h_hae: float | None, st) -> float | None:
+        """Inaltime elipsoidala (WGS-84) -> nivelul marii, cu EGM96 (grila regionala)."""
+        if h_hae is None:
+            return None
+        from . import geoid
+        h = geoid.hae_to_msl(lat, lon, h_hae)
+        if h is None:
+            st.note("inaltime elipsoidala in afara grilei EGM96 regionale: pastrata neconvertita")
+            return h_hae
+        st.note("inaltimi elipsoidale (HAE) convertite la nivelul marii cu EGM96")
+        return h
 
     # ---------- MISB KLV (EO/IR, STANAG 4609) ----------
     def _klv(self, pkt: bytes, received_at, source) -> list:
@@ -1112,9 +1133,11 @@ class UniversalAdapter:
                 if vt.location and vt.location.get("lat") is not None:
                     L = vt.location
                     se, sn = L.get("sig_e") or default_sigma, L.get("sig_n") or default_sigma
-                    det(rid, L["lat"], L["lon"], max(se, 1.0), max(sn, 1.0), L.get("rho_en") or 0.0, L.get("hae"))
+                    det(rid, L["lat"], L["lon"], max(se, 1.0), max(sn, 1.0), L.get("rho_en") or 0.0,
+                        self._to_msl(L["lat"], L["lon"], L.get("hae"), st))
                 elif vt.offset_lat is not None and fcl is not None:
-                    det(rid, fcl + vt.offset_lat, fco + vt.offset_lon, default_sigma, default_sigma, 0.0, vt.hae)
+                    det(rid, fcl + vt.offset_lat, fco + vt.offset_lon, default_sigma, default_sigma, 0.0,
+                        self._to_msl(fcl + vt.offset_lat, fco + vt.offset_lon, vt.hae, st))
                     st.note("tinte VMTI ca decalaj fata de centrul cadrului (tag 10/11 + ST 0601 tag 23/24)")
                 else:
                     st.need("tinte VMTI doar in pixeli: cer geolocatie (locatie tag 17 sau decalaje + centrul cadrului)")
@@ -1483,9 +1506,6 @@ class UniversalAdapter:
         if x is None or y is None:
             return None
         x, y = float(x), float(y)
-        if datum == "WGS84_G" and loc.get("z") is not None:
-            st.note("z raportat fata de geoid (WGS84_G): conversia la inaltime elipsoidala cere modelul EGM, "
-                    "neaplicata (diferenta ~30-40 m in Romania)")
         if cs == "UNSPECIFIED":
             st.note("abatere: coordinate_system nespecificat; presupus LAT_LNG_DEG_M")
             cs = "LAT_LNG_DEG_M"
@@ -1589,6 +1609,14 @@ class UniversalAdapter:
             if not (ex or ey):
                 st.note("fara x_error/y_error: precizia pozitiei e presupusa (50 m)")
             height = loc.get("z")
+            if height is not None:
+                datum = self._enum(loc.get("datum"), {0: "UNSPECIFIED", 1: "WGS84_E", 2: "WGS84_G"}, "LOCATION_DATUM_")
+                if datum == "WGS84_G":
+                    st.note("z fata de geoid (WGS84_G): folosit ca altitudine fata de nivelul marii")
+                else:
+                    if datum == "UNSPECIFIED":
+                        st.note("abatere: datum nespecificat; z presupus inaltime elipsoidala")
+                    height = self._to_msl(ll[0], ll[1], float(height), st)
         elif rb is not None:
             if site is None:
                 st.need("pozitia nodului (statusReport cu node_location sau configurare): "
@@ -1648,10 +1676,16 @@ class UniversalAdapter:
             if datum == "UNSPECIFIED":
                 st.note("abatere: datum nespecificat in range_bearing; presupus nord adevarat")
         elif datum == "MAGNETIC":
-            if site.mag_declination_deg is None:
-                st.need("declinatia magnetica a nodului (mag_declination_deg; ~+6 grade in Dobrogea, din WMM)")
-                return None
-            az += math.radians(site.mag_declination_deg)
+            decl = site.mag_declination_deg
+            if decl is None:
+                from . import geomag
+                year = self.decimal_year if self.decimal_year is not None else geomag.decimal_year()
+                if not geomag.valid(year):
+                    st.need(f"declinatia magnetica a nodului: WMM2025 nu acopera anul {year:.1f} (mag_declination_deg)")
+                    return None
+                decl = geomag.declination(site.lat, site.lon, site.antenna_height / 1000.0, year)
+                st.note(f"azimut magnetic corectat cu declinatia WMM2025 la nod ({decl:+.2f} grd)")
+            az += math.radians(decl)
         elif datum == "GRID":
             zone = self.sapient_nodes.get(node, {}).get("zone")
             zn = self._utm_zone(zone, node, st)[0] if zone and self._utm_zone(zone, node, st) else \

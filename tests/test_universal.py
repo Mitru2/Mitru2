@@ -232,7 +232,9 @@ def test_sapient_location_object_track_and_bird_filter():
     out = ad.feed("\n".join(json.dumps(m) for m in msgs))
     assert len(out) == 1
     r = out[0]
-    assert isinstance(r, RadarTrackReport) and r.vx == -30.0 and r.height_m == 120.0
+    from santinela import geoid
+    assert isinstance(r, RadarTrackReport) and r.vx == -30.0
+    assert r.height_m == pytest.approx(120.0 - geoid.undulation(lat, lon), abs=0.01)  # datum nespecificat: HAE
     assert r.t == pytest.approx(60.0)
 
 

@@ -84,6 +84,14 @@ _C = [
                "timpi in ms (uint64)", "verificat", "descriptorii takproto 3.0.1 (MIT), citit ca date"),
     Convention("cot.ce", "ce = raza erorii circulare in metri (folosim sqrt(lambda_max) a covariantei de pozitie, ~1 sigma); "
                "9999999 = necunoscut", "presupus", "schema CoT MITRE nu fixeaza nivelul de incredere"),
+    # ---------------- geodezie
+    Convention("wmm2025", "declinatia magnetica din World Magnetic Model 2025 (valabil 2025.0-2030.0); azimut "
+               "adevarat = azimut magnetic + D", "verificat",
+               "coeficientii NOAA (identici in 2 redistribuiri); valorile oficiale de test: 12 puncte (D/I la 0,005 grd, "
+               "X/Y/Z la 0,001 nT) si 100 de puncte (sub 0,05 nT)"),
+    Convention("geoid.egm96", "altitudinile din tracker sunt fata de nivelul marii: H = h_HAE - N(EGM96); grila "
+               "regionala 41-50 N, 18-33 E, pas 5'", "verificat",
+               "grila globala EGM96 5' (pachetul egm96, MIT) reproduce cele 6 puncte de test NGA la sub 5 mm"),
     # ---------------- MISB (STANAG 4609)
     Convention("misb.st0601", "mapari liniare domeniu -> interval pe tag; indicator de eroare = valoarea minima "
                "cu semn; suma de control = suma cuvintelor de 16 biti; tagurile 43/44 = x2 pixeli",

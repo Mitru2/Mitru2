@@ -155,7 +155,9 @@ def test_klv_to_tracker_inputs():
     v = [o for o in out if "vmti7" in o.report_id][0]
     assert FR.to_xy(v.lat, v.lon) == pytest.approx([6000.0, 2000.0], abs=1.0)
     assert v.cov[0, 0] == pytest.approx(400.0, rel=0.02) and v.cov[1, 1] == pytest.approx(1600.0, rel=0.02)
-    assert v.cov[0, 1] == pytest.approx(0.5 * 20 * 40, rel=0.02) and v.altitude_m == pytest.approx(150.0, abs=1)
+    from santinela import geoid
+    assert v.cov[0, 1] == pytest.approx(0.5 * 20 * 40, rel=0.02)
+    assert v.altitude_m == pytest.approx(150.0 - geoid.undulation(v.lat, v.lon), abs=1)  # HAE -> MSL
 
 
 def _mpegts(payload: bytes, pid: int = 0x1F1) -> bytes:

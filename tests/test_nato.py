@@ -155,7 +155,9 @@ def test_sapient_binary_end_to_end(tmp_path):
     out = ad.feed(framed)
     assert len(out) == 1 and isinstance(out[0], RadarTrackReport)
     r = out[0]
-    assert r.t == pytest.approx(12.0) and r.vx == -30.0 and r.height_m == 50.0
+    from santinela import geoid
+    assert r.t == pytest.approx(12.0) and r.vx == -30.0
+    assert r.height_m == pytest.approx(50.0 - geoid.undulation(lat, lon), abs=0.01)  # WGS84_E -> MSL
     assert r.cov[:2, :2] == pytest.approx(np.array([[400.0, 50.0], [50.0, 900.0]]))
     assert not ad.sapient_deviations[NODE]
 

@@ -145,7 +145,8 @@ def test_cat015_wgs84_track_with_correlated_covariance():
     r = out[0]
     assert r.t == pytest.approx(10.5) and r.track_number == 77 and (r.vx, r.vy) == (-30.0, 5.0)
     assert r.cov[0, 1] == pytest.approx(0.25 * 40 * 60) and r.cov[1, 1] == pytest.approx(3600.0)
-    assert r.height_m == pytest.approx(120.0)
+    from santinela import geoid
+    assert r.height_m == pytest.approx(120.0 - geoid.undulation(45.3, 28.5), abs=0.01)  # HAE -> MSL
 
 
 def test_cat015_polar_needs_site_and_multistatic_needs_wgs84():
