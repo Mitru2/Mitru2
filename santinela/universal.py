@@ -632,12 +632,15 @@ class UniversalAdapter:
         for cat, blk in blocks:
             if cat == 247:
                 continue
-            if cat in (1, 2, 34, 48, 62, 21):
+            if cat in (1, 2, 34, 48, 62, 21, 15, 205):
                 blk = self._edition_filter(cat, blk)
                 if blk is None:
                     continue
             if cat in (1, 2, 34):
                 out.extend(self._legacy_asterix(cat, blk, received_at))
+                continue
+            if cat in (15, 205):
+                out.extend(self._spec_asterix(cat, blk, received_at))
                 continue
             if cat not in (48, 62, 21):
                 st = self._status(f"CAT{cat:03d}", "asterix")
@@ -688,6 +691,120 @@ class UniversalAdapter:
         if ref and str(ed) != ref:
             st.note(f"CAT{cat:03d} editia {ed} (referinta {ref}): verificati diferentele de UAP")
         return blk
+
+    def _spec_asterix(self, cat: int, blk: bytes, received_at) -> list:
+        """CAT015 (INCS: supraveghere necooperativa, ex. radar pasiv/multistatic) si CAT205
+        (goniometre radio), decodate generic dupa asterix-specs."""
+        out = []
+        for rec in decode_block(blk, full=True)[1]:
+            f = rec["fields"]
+            sid = (f.get("010", {}).get("SAC"), f.get("010", {}).get("SIC"))
+            key = f"SAC{sid[0]}/SIC{sid[1]}"
+            st = self._status(key, f"asterix CAT{cat:03d}")
+            item = self._cat015(f, sid, key, st, received_at) if cat == 15 else \
+                self._cat205(f, sid, key, st, received_at)
+            if item is not None:
+                st.accepted += 1
+                out.append(item)
+        return out
+
+    def _cat015(self, f, sid, key, st, received_at):
+        mt = (f.get("000") or {}).get("MT")
+        if mt == 5:
+            return None  # sfarsit de traseu
+        desc = f.get("020") or {}
+        if desc.get("TTAX") in (1, 2, 3):
+            st.note("tinte de referinta/sintetice/simulate (I015/020 TTAX) ignorate")
+            return None
+        tod = f.get("145")
+        if tod is None:
+            st.need("I015/145 (ora de aplicabilitate)")
+            return None
+        t = round(tod_to_t(tod, self.tod_ref), 4)
+        site = self._by_asterix.get(sid)
+        hp = f.get("600") or {}
+        height = (f.get("601") or {}).get("GH")
+        if "P84" in hp:
+            lat, lon = hp["P84"]["LATITUDE"], hp["P84"]["LONGITUDE"]
+            if site is None:
+                site = self._auto_site(f"INCS-{sid[0]}-{sid[1]}", lat, lon, "senzor", st, sid[0], sid[1])
+            p = self.frame.to_xy(lat, lon) - site.center
+            if "HPP" in hp:
+                sx, sy, rho = hp["HPP"]["SDHPX"], hp["HPP"]["SDHPY"], hp["HPP"]["COSDHPXY"]
+            elif "HPR" in hp:
+                sx, sy, rho = hp["HPR"]["RSHPX"] / 2.0, hp["HPR"]["RSHPY"] / 2.0, hp["HPR"]["CORSHPXY"]
+                st.note("precizia din I015/600 HPR (marja); folosita ca 2 sigma")
+            else:
+                sx = sy = 100.0
+                rho = 0.0
+                st.note("fara I015/600 HPP: precizia pozitiei presupusa (100 m)")
+            sx, sy = max(sx, 5.0), max(sy, 5.0)
+            R = np.array([[sx * sx, rho * sx * sy], [rho * sx * sy, sy * sy]])
+        else:
+            if desc.get("MOMU") == 1:
+                st.need("I015/600 P84: senzor multistatic fara pozitie WGS-84 (distanta/azimut nu sunt monostatice)")
+                return None
+            rng = (f.get("625") or {}).get("R")
+            az = (f.get("627") or {}).get("AZ")
+            if rng is None or az is None:
+                st.need("pozitia tintei: I015/600 P84 sau I015/625 R + I015/627 AZ")
+                return None
+            if site is None:
+                st.need("pozitia senzorului INCS (configurare cu SAC/SIC): raportul e polar")
+                return None
+            el = math.radians((f.get("628") or {}).get("EL") or 0.0)
+            s_r = (f.get("625") or {}).get("SDR") or site.sigma_range
+            s_az = math.radians((f.get("627") or {}).get("SDASZ") or site.sigma_az_deg)
+            p, R = polar_gauss_moments(np.zeros(2), math.radians(az), rng * math.cos(el), s_az, s_r)
+            if height is None and (f.get("628") or {}).get("EL") is not None:
+                height = site.antenna_height + rng * math.sin(el)
+        if "626" in f:
+            st.note("I015/626 Doppler (poate fi bistatic): neutilizat in filtru")
+        hv = (f.get("602") or {}).get("HV")
+        trn = f.get("161")
+        status = f.get("170") or {}
+        if trn is not None and mt in (2, 4):
+            vx = vy = None
+            cov = R
+            if hv is not None:
+                vx, vy = hv["X"], hv["Y"]
+                sd = (f.get("602") or {}).get("SDHV") or {"X": 3.0, "Y": 3.0}
+                cov = np.zeros((4, 4))
+                cov[:2, :2] = R
+                cov[2:, 2:] = np.diag([max(sd["X"], 0.5) ** 2, max(sd["Y"], 0.5) ** 2])
+            return RadarTrackReport(f"{key}:{tod:.3f}:{trn}", site.sensor_id, int(trn), t, float(p[0]), float(p[1]),
+                                    vx, vy, cov, height, status.get("CNF", 0) == 0, received_at=received_at)
+        lat, lon = self.frame.to_latlon(*(site.center + p))
+        return SensorDetection(f"{key}:{tod:.3f}:{trn}", site.sensor_id, t, lat, lon, R, pd=site.pd,
+                               lambda_fa=site.lambda_fa, received_at=received_at, altitude_m=height)
+
+    def _cat205(self, f, sid, key, st, received_at):
+        mt = f.get("000")
+        tod = f.get("030")
+        if tod is None:
+            return None
+        if mt == 2 or ("050" not in f and "070" in f):
+            st.note("relevmente goniometrice fara pozitie (I205/070/080): neutilizate, cer triangulare")
+            return None
+        if mt == 4 or "050" not in f:
+            return None
+        lat, lon = f["050"]["LAT"], f["050"]["LON"]
+        site = self._by_asterix.get(sid)
+        if site is None:
+            site = self._auto_site(f"RDF-{sid[0]}-{sid[1]}", lat, lon, "senzor", st, sid[0], sid[1])
+        sig = max(float(f.get("110") or 0.0), 50.0) if f.get("110") else 500.0
+        if not f.get("110"):
+            st.note("fara I205/110: incertitudinea pozitiei emitatorului presupusa (500 m)")
+        if "090" in f:
+            st.note("goniometru pe canale radio (I205/090): emitatorul poate fi drona sau operatorul ei")
+        t = round(tod_to_t(tod, self.tod_ref), 4)
+        trn = f.get("160")
+        if trn is not None:
+            return RadarTrackReport(f"{key}:{tod:.3f}:{trn}", site.sensor_id, int(trn), t,
+                                    *(self.frame.to_xy(lat, lon) - site.center).tolist(), None, None,
+                                    np.eye(2) * sig * sig, None, True, received_at=received_at)
+        return SensorDetection(f"{key}:{tod:.3f}:{f.get('040')}", site.sensor_id, t, lat, lon,
+                               np.eye(2) * sig * sig, pd=site.pd, lambda_fa=site.lambda_fa, received_at=received_at)
 
     def _legacy_asterix(self, cat: int, blk: bytes, received_at) -> list:
         """CAT002/034 (serviciu: ora, pozitia radarului) si CAT001 (plot-uri/trasee vechi)."""

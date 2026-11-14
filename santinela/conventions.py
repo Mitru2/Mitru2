@@ -60,10 +60,12 @@ _C = [
                "raport", "disectorul Wireshark packet-stanag4607.c (citat in raport)"),
     Convention("stanag4607.mdv", "D31 in decimetri/s", "raport", "DTIC ADA479333 (citat in raport)"),
     # ---------------- ASTERIX
-    Convention("asterix.editions", "editii curente: CAT048 1.32, CAT062 1.21, CAT021 2.7, CAT034 1.29",
-               "raport", "EUROCONTROL (citat in raport)"),
-    Convention("asterix.uap_tables", "tabelele UAP din asterix.py au fost scrise dupa specificatia publica, "
-               "fara textul editiei curente la indemana", "presupus", "de comparat cu specificatiile EUROCONTROL"),
+    Convention("asterix.editions", "editii curente: CAT048 1.32, CAT062 1.21, CAT021 2.7, CAT034 1.29, CAT015 1.2, "
+               "CAT205 1.0, CAT247 1.3", "verificat",
+               "asterix-specs (transcrierea structurata EUROCONTROL), revizia 5cf64b63; coincide cu raportul"),
+    Convention("asterix.uap_tables", "UAP-urile si structura articolelor sunt generate din asterix-specs "
+               "(santinela/asterix_spec.py); interpretoarele scrise de mana sunt testate camp cu camp contra lor",
+               "verificat", "asterix-specs revizia 5cf64b63 (BSD-3); verificarea a gasit si corectat 3 erori"),
     # ---------------- NFFI / FFT
     Convention("nffi.standard", "NFFI a devenit ADatP-36 (STANAG 5527); FMN Spiral 5 cere FFI MTF (APP-11), IP1 preferat",
                "raport", "citat in raport"),

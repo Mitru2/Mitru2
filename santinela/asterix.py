@@ -31,104 +31,22 @@ class AsterixError(ValueError):
     pass
 
 
-# ------------------------------------------------------------------ tabele UAP
-# Un articol: (nume, tip, parametru)
-#   fixed n | var | var3 (extensii de 3 octeti) | rep n | explicit | compound [subcampuri] | spare
-# Subcamp compus: int (fix) | ("rep", n) | "var"
-UAP048 = {
-    1: ("010", "fixed", 2), 2: ("140", "fixed", 3), 3: ("020", "var", None), 4: ("040", "fixed", 4),
-    5: ("070", "fixed", 2), 6: ("090", "fixed", 2), 7: ("130", "compound", [1] * 7),
-    8: ("220", "fixed", 3), 9: ("240", "fixed", 6), 10: ("250", "rep", 8), 11: ("161", "fixed", 2),
-    12: ("042", "fixed", 4), 13: ("200", "fixed", 4), 14: ("170", "var", None),
-    15: ("210", "fixed", 4), 16: ("030", "var", None), 17: ("080", "fixed", 2), 18: ("100", "fixed", 4),
-    19: ("110", "fixed", 2), 20: ("120", "compound", [2, ("rep", 6)]), 21: ("230", "fixed", 2),
-    22: ("260", "fixed", 7), 23: ("055", "fixed", 1), 24: ("050", "fixed", 2), 25: ("065", "fixed", 1),
-    26: ("060", "fixed", 2), 27: ("SP", "explicit", None), 28: ("RE", "explicit", None),
-}
+# ------------------------------------------------------------------ structura (din asterix-specs)
+# UAP-urile si structura articolelor vin din santinela/asterix_spec.py, generat din proiectul
+# asterix-specs (transcrierea structurata a specificatiilor EUROCONTROL); nu mai sunt scrise de mana.
+from .asterix_spec import CATEGORIES as SPEC
 
-UAP062 = {
-    1: ("010", "fixed", 2), 2: ("-", "spare", None), 3: ("015", "fixed", 1), 4: ("070", "fixed", 3),
-    5: ("105", "fixed", 8), 6: ("100", "fixed", 6), 7: ("185", "fixed", 4),
-    8: ("210", "fixed", 2), 9: ("060", "fixed", 2), 10: ("245", "fixed", 7),
-    11: ("380", "compound", [3, 6, 2, 2, 2, 2, 2, 1, ("rep", 15), 2, 2, 7, 2, 2,
-                             2, 2, 2, 2, 1, 8, 1, 6, 2, 1, ("rep", 8), 2, 2, 2]),
-    12: ("040", "fixed", 2), 13: ("080", "var", None), 14: ("290", "compound", [1, 1, 1, 1, 2, 1, 1, 1, 1, 1]),
-    15: ("200", "fixed", 1), 16: ("295", "compound", [1] * 31), 17: ("136", "fixed", 2),
-    18: ("130", "fixed", 2), 19: ("135", "fixed", 2), 20: ("220", "fixed", 2),
-    21: ("390", "compound", [2, 7, 4, 1, 4, 1, 4, 4, 3, 2, 2, ("rep", 4), 6, 1, 7, 7, 2, 7]),
-    22: ("270", "var", None), 23: ("300", "fixed", 1), 24: ("110", "compound", [1, 4, 6, 2, 2, 1, 1]),
-    25: ("120", "fixed", 2), 26: ("510", "var3", None), 27: ("500", "compound", [4, 2, 4, 1, 1, 2, 2, 1]),
-    28: ("340", "compound", [2, 4, 2, 2, 2, 1]),
-    29: ("-", "spare", None), 30: ("-", "spare", None), 31: ("-", "spare", None), 32: ("-", "spare", None),
-    33: ("-", "spare", None), 34: ("RE", "explicit", None), 35: ("SP", "explicit", None),
-}
+UAPS = {cat: v["uaps"] for cat, v in SPEC.items()}       # {cat: {caz: [nume articol pe FRN]}}
+SPEC_EDITION = {cat: v["edition"] for cat, v in SPEC.items()}
+REFERENCE_EDITION = {c: SPEC_EDITION[c] for c in (48, 62, 21, 34, 1, 2, 15, 16, 205, 247)}
+TABLE_MAJOR = {c: int(e.split(".")[0]) for c, e in SPEC_EDITION.items()}
+ITEM_FRN = {cat: {name: k for k, name in enumerate(v["uaps"].get("default", v["uaps"].get("plot")), 1)
+                  if name not in ("-", "RFS")} for cat, v in SPEC.items()}
+KNOWN_CATEGORIES |= {15, 16, 129, 205}
 
-UAP021 = {
-    1: ("010", "fixed", 2), 2: ("040", "var", None), 3: ("161", "fixed", 2), 4: ("015", "fixed", 1),
-    5: ("071", "fixed", 3), 6: ("130", "fixed", 6), 7: ("131", "fixed", 8),
-    8: ("072", "fixed", 3), 9: ("150", "fixed", 2), 10: ("151", "fixed", 2), 11: ("080", "fixed", 3),
-    12: ("073", "fixed", 3), 13: ("074", "fixed", 4), 14: ("075", "fixed", 3),
-    15: ("076", "fixed", 4), 16: ("140", "fixed", 2), 17: ("090", "var", None), 18: ("210", "fixed", 1),
-    19: ("070", "fixed", 2), 20: ("230", "fixed", 2), 21: ("145", "fixed", 2),
-    22: ("152", "fixed", 2), 23: ("200", "fixed", 1), 24: ("155", "fixed", 2), 25: ("157", "fixed", 2),
-    26: ("160", "fixed", 4), 27: ("165", "fixed", 2), 28: ("077", "fixed", 3),
-    29: ("170", "fixed", 6), 30: ("020", "fixed", 1), 31: ("220", "compound", [2, 2, 2, 1]),
-    32: ("146", "fixed", 2), 33: ("148", "fixed", 2), 34: ("110", "compound", ["var", ("rep", 15)]),
-    35: ("016", "fixed", 1),
-    36: ("008", "fixed", 1), 37: ("271", "var", None), 38: ("132", "fixed", 1), 39: ("250", "rep", 8),
-    40: ("260", "fixed", 7), 41: ("400", "fixed", 1), 42: ("295", "compound", [1] * 23),
-    43: ("-", "spare", None), 44: ("-", "spare", None), 45: ("-", "spare", None), 46: ("-", "spare", None),
-    47: ("-", "spare", None), 48: ("RE", "explicit", None), 49: ("SP", "explicit", None),
-}
 
-# CAT001 (radar monoradar, format vechi inca folosit de radare militare): doua UAP-uri,
-# alese dupa bitul TYP din I001/020 (0 = plot, 1 = traseu).
-UAP001_PLOT = {
-    1: ("010", "fixed", 2), 2: ("020", "var", None), 3: ("040", "fixed", 4), 4: ("070", "fixed", 2),
-    5: ("090", "fixed", 2), 6: ("130", "var", None), 7: ("141", "fixed", 2),
-    8: ("050", "fixed", 2), 9: ("120", "fixed", 1), 10: ("131", "fixed", 1), 11: ("080", "fixed", 2),
-    12: ("100", "fixed", 4), 13: ("060", "fixed", 2), 14: ("030", "var", None),
-    15: ("150", "fixed", 1), 16: ("-", "spare", None), 17: ("-", "spare", None), 18: ("-", "spare", None),
-    19: ("-", "spare", None), 20: ("SP", "explicit", None), 21: ("RFS", "rfs", None),
-}
-UAP001_TRACK = {
-    1: ("010", "fixed", 2), 2: ("020", "var", None), 3: ("161", "fixed", 2), 4: ("040", "fixed", 4),
-    5: ("042", "fixed", 4), 6: ("200", "fixed", 4), 7: ("070", "fixed", 2),
-    8: ("090", "fixed", 2), 9: ("141", "fixed", 2), 10: ("130", "var", None), 11: ("131", "fixed", 1),
-    12: ("120", "fixed", 1), 13: ("170", "var", None), 14: ("210", "var", None),
-    15: ("050", "fixed", 2), 16: ("080", "fixed", 2), 17: ("100", "fixed", 4), 18: ("060", "fixed", 2),
-    19: ("030", "var", None), 20: ("SP", "explicit", None), 21: ("RFS", "rfs", None),
-}
-UAP002 = {
-    1: ("010", "fixed", 2), 2: ("000", "fixed", 1), 3: ("020", "fixed", 1), 4: ("030", "fixed", 3),
-    5: ("041", "fixed", 2), 6: ("050", "var", None), 7: ("060", "var", None),
-    8: ("070", "rep", 2), 9: ("100", "fixed", 8), 10: ("090", "fixed", 2), 11: ("080", "var", None),
-    12: ("-", "spare", None), 13: ("SP", "explicit", None), 14: ("RFS", "rfs", None),
-}
-UAP034 = {
-    1: ("010", "fixed", 2), 2: ("000", "fixed", 1), 3: ("030", "fixed", 3), 4: ("020", "fixed", 1),
-    5: ("041", "fixed", 2), 6: ("050", "compound", [1, 0, 0, 1, 1, 2]), 7: ("060", "compound", [1, 0, 0, 1, 1, 1]),
-    8: ("070", "rep", 2), 9: ("100", "fixed", 8), 10: ("110", "fixed", 1), 11: ("120", "fixed", 8),
-    12: ("090", "fixed", 2), 13: ("RE", "explicit", None), 14: ("SP", "explicit", None),
-}
-
-# CAT247: schimbul numerelor de versiune ale categoriilor (I247/550: categorie, versiune majora, minora).
-# FRN 5-7 dupa tiparul uzual (rezervat, SP, RE) - de confirmat pe specificatie.
-UAP247 = {
-    1: ("010", "fixed", 2), 2: ("015", "fixed", 1), 3: ("140", "fixed", 3), 4: ("550", "rep", 3),
-    5: ("-", "spare", None), 6: ("SP", "explicit", None), 7: ("RE", "explicit", None),
-}
-
-UAPS = {48: UAP048, 62: UAP062, 21: UAP021, 1: UAP001_PLOT, 2: UAP002, 34: UAP034, 247: UAP247}
-
-# Editia pentru care sunt scrise tabelele (majora trebuie sa coincida) si editia curenta de referinta
-# (conventia 'asterix.editions', din raportul din 13.11.2026).
-TABLE_MAJOR = {48: 1, 62: 1, 21: 2, 34: 1, 1: 1, 2: 1}
-REFERENCE_EDITION = {48: "1.32", 62: "1.21", 21: "2.7", 34: "1.29"}
-UAP = UAP048  # compatibilitate
-ITEM_FRN = {48: {v[0]: k for k, v in UAP048.items()},
-            62: {v[0]: k for k, v in UAP062.items() if v[0] != "-"},
-            21: {v[0]: k for k, v in UAP021.items() if v[0] != "-"}}
+def item_spec(cat: int, name: str):
+    return SPEC[cat]["items"][name][1]
 
 
 def _signed(v: int, bits: int) -> int:
@@ -139,7 +57,6 @@ def _sbytes(d: bytes) -> int:
     return _signed(int.from_bytes(d, "big"), 8 * len(d))
 
 
-# ------------------------------------------------------------------ lungimi
 def _read_var(buf: bytes, i: int, unit: int = 1) -> int:
     j = i
     while True:
@@ -151,34 +68,46 @@ def _read_var(buf: bytes, i: int, unit: int = 1) -> int:
             return j
 
 
-def _sub_length(buf: bytes, i: int, spec) -> int:
-    if isinstance(spec, int):
-        return spec
-    if spec == "var":
-        return _read_var(buf, i) - i
-    if isinstance(spec, tuple) and spec[0] == "rep":
-        if i >= len(buf):
-            raise AsterixError("subcamp repetitiv trunchiat")
-        return 1 + buf[i] * spec[1]
-    raise AsterixError(f"subcamp necunoscut {spec}")
+def _ebits(els) -> int:
+    return sum(e[1] for e in els)
 
 
-def _item_length(buf: bytes, i: int, kind: str, n) -> int:
-    if kind == "fixed":
-        return n
-    if kind == "var":
-        return _read_var(buf, i) - i
-    if kind == "var3":
-        return _read_var(buf, i, 3) - i
-    if kind == "rep":
-        if i >= len(buf):
+def _length(buf: bytes, i: int, sp) -> int:
+    """Lungimea in octeti a unui articol cu structura ``sp`` care incepe la ``i``."""
+    t = sp[0]
+    if t == "F":
+        return _ebits(sp[1]) // 8
+    if t == "X":
+        j = i
+        parts = sp[1]
+        k = 0
+        while True:
+            n = (_ebits(parts[min(k, len(parts) - 1)]) + 1) // 8
+            j += n
+            if j > len(buf):
+                raise AsterixError("articol extins trunchiat")
+            if not buf[j - 1] & 1:
+                return j - i
+            k += 1
+    if t == "R":
+        nb = sp[1]
+        if i + nb > len(buf):
             raise AsterixError("articol repetitiv trunchiat")
-        return 1 + buf[i] * n
-    if kind == "explicit":
+        return nb + int.from_bytes(buf[i:i + nb], "big") * (_ebits(sp[2]) // 8)
+    if t == "RF":
+        n = (_ebits(sp[1]) + 1) // 8
+        j = i
+        while True:
+            j += n
+            if j > len(buf):
+                raise AsterixError("articol repetitiv (FX) trunchiat")
+            if not buf[j - 1] & 1:
+                return j - i
+    if t == "EXP":
         if i >= len(buf) or buf[i] < 1:
             raise AsterixError("lungime explicita invalida")
         return buf[i]
-    if kind == "compound":
+    if t == "C":
         j = _read_var(buf, i)
         k = j
         for byte_idx in range(j - i):
@@ -186,18 +115,14 @@ def _item_length(buf: bytes, i: int, kind: str, n) -> int:
             for bit in range(7):
                 if b & (0x80 >> bit):
                     idx = byte_idx * 7 + bit
-                    if idx >= len(n):
-                        raise AsterixError("subcamp compus in afara tabelului")
-                    k += _sub_length(buf, k, n[idx])
+                    if idx >= len(sp[1]) or sp[1][idx] is None:
+                        raise AsterixError("subcamp compus in afara structurii")
+                    k += _length(buf, k, sp[1][idx][1])
         return k - i
-    if kind == "spare":
-        raise AsterixError("FRN de rezerva prezent in FSPEC")
-    if kind == "rfs":
-        raise AsterixError("secventierea aleatoare a campurilor (RFS) nu e suportata")
-    raise AsterixError(kind)
+    raise AsterixError(t)
 
 
-def _compound_parts(d: bytes, specs) -> dict:
+def _compound_parts(d: bytes, sp) -> dict:
     """Subcampurile prezente ale unui articol compus: {index (de la 1): octeti}."""
     j = _read_var(d, 0)
     k = j
@@ -206,10 +131,77 @@ def _compound_parts(d: bytes, specs) -> dict:
         for bit in range(7):
             if d[byte_idx] & (0x80 >> bit):
                 idx = byte_idx * 7 + bit
-                ln = _sub_length(d, k, specs[idx])
+                ln = _length(d, k, sp[1][idx][1])
                 out[idx + 1] = d[k:k + ln]
                 k += ln
     return out
+
+
+_ICAO6 = "#ABCDEFGHIJKLMNOPQRSTUVWXYZ##### ###############0123456789######"
+
+
+def _value(raw: int, bits: int, content):
+    kind = content[0]
+    if kind == "q":
+        v = _signed(raw, bits) if content[1] else raw
+        return v * content[2]
+    if kind == "int":
+        return _signed(raw, bits) if content[1] else raw
+    if kind == "str":
+        if content[1] == "StringICAO":
+            return "".join(_ICAO6[(raw >> (bits - 6 * (k + 1))) & 0x3F] for k in range(bits // 6)).strip(" #")
+        if content[1] == "StringOctal":
+            return "".join(str((raw >> (bits - 3 * (k + 1))) & 7) for k in range(bits // 3))
+        return raw.to_bytes(bits // 8, "big").decode("latin-1").strip()
+    return raw
+
+
+def _fields(d: bytes, els, total_bits: int | None = None) -> dict:
+    total = total_bits if total_bits is not None else len(d) * 8
+    v = int.from_bytes(d, "big")
+    out = {}
+    pos = 0
+    for name, bits, content in els:
+        raw = (v >> (total - pos - bits)) & ((1 << bits) - 1)
+        pos += bits
+        if content[0] != "spare":
+            out[name or "val"] = _value(raw, bits, content)
+    return out
+
+
+def decode_item(sp, d: bytes):
+    """Decodare generica, dupa structura din asterix-specs: valori scalate in unitatile specificatiei."""
+    t = sp[0]
+    if t == "F":
+        f = _fields(d, sp[1])
+        return f["val"] if list(f) == ["val"] else f
+    if t == "X":
+        out, j = {}, 0
+        for k in range(len(d)):
+            part = sp[1][min(k, len(sp[1]) - 1)]
+            n = (_ebits(part) + 1) // 8
+            if j >= len(d):
+                break
+            out.update(_fields(d[j:j + n], part, n * 8))
+            last = d[j + n - 1]
+            j += n
+            if not last & 1:
+                break
+        return out
+    if t == "R":
+        nb, els = sp[1], sp[2]
+        n = int.from_bytes(d[:nb], "big")
+        size = _ebits(els) // 8
+        items = [_fields(d[nb + k * size:nb + (k + 1) * size], els) for k in range(n)]
+        return [x["val"] if list(x) == ["val"] else x for x in items]
+    if t == "RF":
+        size = (_ebits(sp[1]) + 1) // 8
+        return [_fields(d[k:k + size], sp[1], size * 8) for k in range(0, len(d), size)]
+    if t == "EXP":
+        return bytes(d[1:])
+    if t == "C":
+        return {sp[1][idx - 1][0]: decode_item(sp[1][idx - 1][1], part) for idx, part in _compound_parts(d, sp).items()}
+    raise AsterixError(t)
 
 
 # ------------------------------------------------------------------ interpretare
@@ -233,7 +225,7 @@ def _i048(item: str, d: bytes) -> dict:
         return {"height_m": _signed(v & 0x3FFF, 14) * 25.0 * FT}
     if item == "120":
         out = {}
-        parts = _compound_parts(d, UAP048[20][2])
+        parts = _compound_parts(d, item_spec(48, "120"))
         if 1 in parts:
             v = struct.unpack(">H", parts[1])[0]
             out["doppler_valid"] = not (v & 0x8000)
@@ -282,7 +274,7 @@ def _i062(item: str, d: bytes) -> dict:
     if item == "136":
         return {"fl": _sbytes(d) / 4.0, "fl_alt_m": _sbytes(d) / 4.0 * 100 * FT}
     if item == "500":
-        parts = _compound_parts(d, UAP062[27][2])
+        parts = _compound_parts(d, item_spec(62, "500"))
         out = {}
         if 1 in parts:
             out["sigma_x_m"] = struct.unpack(">H", parts[1][:2])[0] * 0.5
@@ -292,14 +284,14 @@ def _i062(item: str, d: bytes) -> dict:
             out["sigma_vy_mps"] = parts[6][1] * 0.25
         return out
     if item == "380":
-        parts = _compound_parts(d, UAP062[11][2])
+        parts = _compound_parts(d, item_spec(62, "380"))
         return {"icao": parts[1].hex().upper()} if 1 in parts else {}
     if item == "060":
         return {"mode3a": f"{struct.unpack('>H', d)[0] & 0x0FFF:04o}"}
     return {}
 
 
-_ICAO_CHARS = "#ABCDEFGHIJKLMNOPQRSTUVWXYZ##### ###############0123456789######"
+_ICAO_CHARS = _ICAO6
 
 
 def _callsign(d: bytes) -> str:
@@ -353,7 +345,7 @@ def _i001(item: str, d: bytes) -> dict:
     if item == "141":
         return {"tod_trunc": struct.unpack(">H", d)[0] / 128.0}
     if item == "120":
-        return {"doppler_mps": _signed(d[0], 8) * 2 ** -14 * NM, "doppler_valid": True}
+        return {"doppler_mps": _signed(d[0], 8) * 2 ** -8 * NM, "doppler_valid": True}  # LSB 2^-8 NM/s
     if item == "090":
         v = struct.unpack(">H", d)[0]
         fl = _signed(v & 0x3FFF, 14) / 4.0
@@ -419,36 +411,53 @@ def looks_like_asterix(buf: bytes) -> bool:
     return bool(blocks) and all(cat in KNOWN_CATEGORIES for cat, _ in blocks)
 
 
-def decode_block(block: bytes) -> tuple[int, list[dict]]:
-    """Decodeaza un bloc; intoarce (categorie, inregistrari). Categoriile fara UAP dau []."""
+def decode_block(block: bytes, full: bool = False) -> tuple[int, list[dict]]:
+    """Decodeaza un bloc; intoarce (categorie, inregistrari). Categoriile fara structura dau [].
+
+    Cu ``full=True`` fiecare inregistrare primeste si ``fields``: toate articolele decodate generic.
+    """
     cat = block[0]
-    if cat not in UAPS:
+    if cat not in SPEC:
         return cat, []
-    interp = INTERPRETERS[cat]
+    interp = INTERPRETERS.get(cat)
+    uaps = UAPS[cat]
     i, end = 3, len(block)
     out = []
     while i < end:
-        uap = UAPS[cat]
+        uap = uaps.get("default")
         fs_end = _read_var(block, i)
         fspec = block[i:fs_end]
         i = fs_end
         rec: dict = {"cat": cat, "items": []}
-        if cat == 1 and fspec[0] & 0x40:
-            # CAT001: UAP-ul depinde de I001/020 (FRN 2); il citim inainte
+        if full:
+            rec["fields"] = {}
+        if uap is None:
+            # CAT001: UAP-ul se alege dupa I001/020 TYP (primul bit), FRN 2; il citim inainte
             j = i + (2 if fspec[0] & 0x80 else 0)
-            uap = UAP001_TRACK if block[j] & 0x80 else UAP001_PLOT
+            if not fspec[0] & 0x40 or j >= end:
+                raise AsterixError(f"CAT{cat:03d}: lipseste articolul care alege UAP-ul")
+            uap = uaps["track" if block[j] & 0x80 else "plot"]
         for byte_idx, b in enumerate(fspec):
             for bit in range(7):
                 if b & (0x80 >> bit):
                     frn = byte_idx * 7 + bit + 1
-                    if frn not in uap:
+                    if frn > len(uap):
                         raise AsterixError(f"CAT{cat:03d}: FRN necunoscut {frn}")
-                    item, kind, n = uap[frn]
-                    ln = _item_length(block, i, kind, n)
+                    item = uap[frn - 1]
+                    if item == "-":
+                        raise AsterixError(f"CAT{cat:03d}: FRN de rezerva {frn} prezent in FSPEC")
+                    if item == "RFS":
+                        raise AsterixError("secventierea aleatoare a campurilor (RFS) nu e suportata")
+                    sp = item_spec(cat, item)
+                    ln = _length(block, i, sp)
                     if i + ln > end:
                         raise AsterixError(f"articol I{cat:03d}/{item} trunchiat")
+                    data = block[i:i + ln]
                     rec["items"].append(item)
-                    rec.update(interp(item, block[i:i + ln]))
+                    if interp is not None:
+                        rec.update(interp(item, data))
+                    if full:
+                        rec["fields"][item] = decode_item(sp, data)
                     i += ln
         out.append(rec)
     return cat, out
@@ -461,6 +470,87 @@ def decode_records(block: bytes, categories: tuple = (48,)) -> list[dict]:
         if cat in categories:
             out.extend(decode_block(blk)[1])
     return out
+
+
+# ------------------------------------------------------------------ codare generica (dupa asterix-specs)
+def _pack_fields(values, els, total_bits: int) -> int:
+    if not isinstance(values, dict):
+        values = {"val": values}
+    v, pos = 0, 0
+    for name, bits, content in els:
+        x = values.get(name or "val", 0) if content[0] != "spare" else 0
+        if content[0] == "q":
+            raw = int(round(x / content[2]))
+        elif content[0] == "str":
+            if content[1] == "StringICAO":
+                raw = 0
+                for ch in str(x).ljust(bits // 6)[:bits // 6]:
+                    raw = (raw << 6) | _ICAO6.index(ch)
+            elif content[1] == "StringOctal":
+                raw = int(str(x), 8)
+            else:
+                raw = int.from_bytes(str(x).encode("latin-1").ljust(bits // 8)[:bits // 8], "big")
+        else:
+            raw = int(x)
+        raw &= (1 << bits) - 1
+        v |= raw << (total_bits - pos - bits)
+        pos += bits
+    return v
+
+
+def encode_item(sp, value) -> bytes:
+    """Inversul lui decode_item (pentru simulare si teste)."""
+    t = sp[0]
+    if t == "F":
+        n = _ebits(sp[1])
+        return _pack_fields(value, sp[1], n).to_bytes(n // 8, "big")
+    if t == "X":
+        parts = sp[1]
+        names = [{e[0] for e in part} for part in parts]
+        last = max([k for k, nm in enumerate(names) if any(f in value for f in nm)] or [0])
+        out = b""
+        for k in range(last + 1):
+            n = _ebits(parts[k]) + 1
+            v = (_pack_fields(value, parts[k], n) | (1 if k < last else 0))
+            out += v.to_bytes(n // 8, "big")
+        return out
+    if t == "R":
+        size = _ebits(sp[2])
+        return len(value).to_bytes(sp[1], "big") + b"".join(
+            _pack_fields(x, sp[2], size).to_bytes(size // 8, "big") for x in value)
+    if t == "RF":
+        n = _ebits(sp[1]) + 1
+        return b"".join((_pack_fields(x, sp[1], n) | (1 if k < len(value) - 1 else 0)).to_bytes(n // 8, "big")
+                        for k, x in enumerate(value))
+    if t == "EXP":
+        return bytes([len(value) + 1]) + bytes(value)
+    if t == "C":
+        idx = {sub[0]: k for k, sub in enumerate(sp[1]) if sub is not None}
+        present = sorted(idx[name] for name in value)
+        nb = present[-1] // 7 + 1
+        prim = bytearray(nb)
+        for k in present:
+            prim[k // 7] |= 0x80 >> (k % 7)
+        for q in range(nb - 1):
+            prim[q] |= 1
+        return bytes(prim) + b"".join(encode_item(sp[1][k][1], value[sp[1][k][0]]) for k in present)
+    raise AsterixError(t)
+
+
+def encode_generic(cat: int, records: list[dict], case: str = "default") -> bytes:
+    """Bloc ASTERIX din inregistrari {articol: valoare in unitatile specificatiei}."""
+    uap = UAPS[cat][case]
+    body = b""
+    for rec in records:
+        frns = sorted(uap.index(it) + 1 for it in rec)
+        nbytes = (max(frns) + 6) // 7
+        fspec = bytearray(nbytes)
+        for frn in frns:
+            fspec[(frn - 1) // 7] |= 0x80 >> ((frn - 1) % 7)
+        for k in range(nbytes - 1):
+            fspec[k] |= 1
+        body += bytes(fspec) + b"".join(encode_item(item_spec(cat, uap[f - 1]), rec[uap[f - 1]]) for f in frns)
+    return bytes([cat]) + struct.pack(">H", len(body) + 3) + body
 
 
 # ------------------------------------------------------------------ codare (simulare/teste)
@@ -572,7 +662,8 @@ def encode_record(rec: dict, cat: int = 48) -> bytes:
         fspec[(frn - 1) // 7] |= 0x80 >> ((frn - 1) % 7)
     for k in range(nbytes - 1):
         fspec[k] |= 1
-    body = b"".join(_ENCODERS[cat](UAPS[cat][frn][0], rec) for frn in present)
+    uap = UAPS[cat].get("default")
+    body = b"".join(_ENCODERS[cat](uap[frn - 1], rec) for frn in present)
     return bytes(fspec) + body
 
 
