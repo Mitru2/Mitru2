@@ -76,6 +76,13 @@ _C = [
     Convention("asterix.uap_tables", "UAP-urile si structura articolelor sunt generate din asterix-specs "
                "(santinela/asterix_spec.py); interpretoarele scrise de mana sunt testate camp cu camp contra lor",
                "verificat", "asterix-specs revizia 5cf64b63 (BSD-3); verificarea a gasit si corectat 3 erori"),
+    Convention("asterix.domains", "valorile in afara domeniului din specificatie (ex. latitudine > 90) refuza "
+               "inregistrarea: semn de editie gresita sau date corupte", "verificat",
+               "asterix-specs (restrictiile campurilor); 3 restrictii imposibile din sursa (I015/627, I015/631) ignorate"),
+    Convention("asterix.real_traffic", "pe capturile reale Croatia Control: 1940/1940 campuri CAT034/048 cu aceiasi "
+               "octeti ca decodorul de referinta, toate valorile verificate egale; CAT001/002 (incadrare ORADIS) si "
+               "CAT062 identice; I001/200: referinta foloseste LSB 0,22 kt, specificatia 2^-14 NM/s",
+               "verificat", "CroatiaControlLtd/asterix, commit 790bca7 (capturi + iesiri de referinta)"),
     # ---------------- NFFI / FFT
     Convention("nffi.standard", "NFFI a devenit ADatP-36 (STANAG 5527); FMN Spiral 5 cere FFI MTF (APP-11), IP1 preferat",
                "raport", "citat in raport"),

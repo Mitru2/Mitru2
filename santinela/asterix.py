@@ -49,6 +49,43 @@ def item_spec(cat: int, name: str):
     return SPEC[cat]["items"][name][1]
 
 
+def _has_bounds(sp) -> bool:
+    t = sp[0]
+    if t == "F" or t == "RF":
+        return any(len(e[2]) == 6 for e in sp[1])
+    if t == "R":
+        return any(len(e[2]) == 6 for e in sp[2])
+    if t == "X":
+        return any(len(e[2]) == 6 for part in sp[1] for e in part)
+    if t == "C":
+        return any(sub is not None and _has_bounds(sub[1]) for sub in sp[1])
+    return False
+
+
+CONSTRAINED = {cat: {name for name, (_, sp) in v["items"].items() if _has_bounds(sp)} for cat, v in SPEC.items()}
+
+
+def _check(sp, val, path: str, out: list) -> None:
+    """Valorile decodate generic fata de domeniile din specificatie."""
+    t = sp[0]
+    if t in ("F", "X"):
+        els = sp[1] if t == "F" else [e for part in sp[1] for e in part]
+        for name, _bits, content in els:
+            if len(content) != 6:
+                continue
+            v = val if not isinstance(val, dict) else val.get(name or "val")
+            lo, hi = content[4], content[5]
+            if v is not None and ((lo is not None and v < lo - 1e-9) or (hi is not None and v > hi + 1e-9)):
+                out.append(f"{path}{'.' + name if name else ''}={v:g} in afara [{lo}, {hi}]")
+    elif t in ("R", "RF"):
+        for k, item in enumerate(val or []):
+            _check(("F", sp[2] if t == "R" else sp[1]), item, f"{path}[{k}]", out)
+    elif t == "C":
+        for sub in sp[1]:
+            if sub is not None and sub[0] in (val or {}):
+                _check(sub[1], val[sub[0]], f"{path}.{sub[0]}", out)
+
+
 def _signed(v: int, bits: int) -> int:
     return v - (1 << bits) if v & (1 << (bits - 1)) else v
 
@@ -400,6 +437,26 @@ def iter_blocks(buf: bytes):
         pos += length
 
 
+def strip_oradis(buf: bytes) -> bytes | None:
+    """Incadrarea ORADIS: fiecare bloc precedat de 6 octeti, primii 2 = lungimea totala (antet inclus).
+
+    Intoarce blocurile ASTERIX concatenate sau None daca bufferul nu are aceasta forma.
+    """
+    out, i = bytearray(), 0
+    if len(buf) < 9:
+        return None
+    while i < len(buf):
+        if i + 9 > len(buf):
+            return None
+        total = struct.unpack(">H", buf[i:i + 2])[0]
+        blk = buf[i + 6:i + total]
+        if total < 9 or i + total > len(buf) or struct.unpack(">H", blk[1:3])[0] != len(blk):
+            return None
+        out += blk
+        i += total
+    return bytes(out)
+
+
 def looks_like_asterix(buf: bytes) -> bool:
     """Bufferul e o succesiune exacta de blocuri ASTERIX din categorii cunoscute?"""
     if not isinstance(buf, (bytes, bytearray)) or len(buf) < 4:
@@ -458,6 +515,12 @@ def decode_block(block: bytes, full: bool = False) -> tuple[int, list[dict]]:
                         rec.update(interp(item, data))
                     if full:
                         rec["fields"][item] = decode_item(sp, data)
+                        rec.setdefault("raw", {})[item] = bytes(data)
+                    if item in CONSTRAINED[cat]:
+                        viol: list = []
+                        _check(sp, rec["fields"][item] if full else decode_item(sp, data), f"I{cat:03d}/{item}", viol)
+                        if viol:
+                            rec.setdefault("violations", []).extend(viol)
                     i += ln
         out.append(rec)
     return cat, out
@@ -708,6 +771,9 @@ class Cat048Adapter:
     def convert(self, records: list[dict], received_at: float | None = None) -> list:
         out = []
         for k, rec in enumerate(records):
+            if rec.get("violations"):
+                self.skipped += 1
+                continue
             site: RadarSite | None = self._by_id.get((rec.get("sac"), rec.get("sic")))
             if site is None or "tod" not in rec or rec.get("sim"):
                 self.skipped += 1

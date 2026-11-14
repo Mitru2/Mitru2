@@ -38,7 +38,8 @@ from . import cot as cotmod
 from . import nffi as nffimod
 from . import remoteid as ridmod
 from . import stanag4607
-from .asterix import (AsterixError, Cat048Adapter, decode_block, iter_blocks, looks_like_asterix, tod_to_t)
+from .asterix import (AsterixError, Cat048Adapter, decode_block, iter_blocks, looks_like_asterix, strip_oradis,
+                      tod_to_t)
 from .cot import looks_like_cot
 from .nffi import FriendlyPosition, looks_like_nffi
 from .protowire import ProtoError, ProtoSchema
@@ -113,6 +114,8 @@ def detect_format(data) -> str:
     if isinstance(data, (bytes, bytearray)):
         if looks_like_asterix(data):
             return "asterix"
+        if strip_oradis(bytes(data)) is not None and looks_like_asterix(strip_oradis(bytes(data))):
+            return "asterix-oradis"
         if looks_like_4607(data):
             return "stanag4607"
         if adsbmod.looks_like_beast(data):
@@ -576,6 +579,8 @@ class UniversalAdapter:
                 self._nffi(data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data,
                            source or "NFFI")
                 out = []
+            elif fmt == "asterix-oradis":
+                out = self._asterix(strip_oradis(bytes(data)), received_at)
             elif fmt == "asterix":
                 out = self._asterix(bytes(data), received_at)
             elif fmt == "nmea":
@@ -608,7 +613,15 @@ class UniversalAdapter:
 
     def feed_file(self, path: str | Path, received_at: float | None = None, source: str | None = None) -> list:
         raw = Path(path).read_bytes()
-        if detect_format(raw) in ("asterix", "stanag4607", "remoteid", "sapient-protobuf"):
+        from . import pcap as pcapmod
+        if pcapmod.looks_like_pcap(raw):
+            out = []
+            for d in pcapmod.read(raw):
+                at = received_at if received_at is not None else round(tod_to_t(d.t % 86400.0, self.tod_ref), 4)
+                out.extend(self.feed(d.payload, at, source or f"{d.src}:{d.sport}->{d.dport}"))
+            return out
+        if detect_format(raw) in ("asterix", "stanag4607", "remoteid", "sapient-protobuf", "klv", "mpegts",
+                                  "beast", "asterix-oradis"):
             return self.feed(raw, received_at, source)
         text = raw.decode("utf-8", "replace")
         fmt = detect_format(text)
@@ -662,6 +675,8 @@ class UniversalAdapter:
             for rec in recs:
                 key = f"SAC{rec.get('sac')}/SIC{rec.get('sic')}"
                 st = self._status(key, f"asterix CAT{cat:03d}")
+                if self._violations(rec, st):
+                    continue
                 if cat == 48:
                     out.extend(self._cat048_rec(rec, st, received_at))
                 elif cat == 62:
@@ -669,6 +684,16 @@ class UniversalAdapter:
                 else:
                     self._cat021_rec(rec, st, key)
         return out
+
+    def _violations(self, rec: dict, st) -> bool:
+        """Inregistrari cu valori in afara domeniului specificatiei: refuzate (editie gresita sau date corupte)."""
+        v = rec.get("violations")
+        if not v:
+            return False
+        self.errors.append(("asterix", f"{st.key}: valori in afara specificatiei, inregistrare refuzata: {v[0]}"))
+        st.need("verificati editia ASTERIX a sursei: valori in afara domeniului specificatiei "
+                f"(ex. {v[0]}); inregistrarile respective sunt refuzate")
+        return True
 
     def _edition_filter(self, cat: int, blk: bytes):
         """Verifica editia sursei (din CAT247 sau configurare) fata de tabelele decodorului."""
@@ -713,6 +738,8 @@ class UniversalAdapter:
             sid = (f.get("010", {}).get("SAC"), f.get("010", {}).get("SIC"))
             key = f"SAC{sid[0]}/SIC{sid[1]}"
             st = self._status(key, f"asterix CAT{cat:03d}")
+            if self._violations(rec, st):
+                continue
             item = self._cat015(f, sid, key, st, received_at) if cat == 15 else \
                 self._cat205(f, sid, key, st, received_at)
             if item is not None:
@@ -828,6 +855,8 @@ class UniversalAdapter:
         for rec in recs:
             key = f"SAC{rec.get('sac')}/SIC{rec.get('sic')}"
             st = self._status(key, f"asterix CAT{cat:03d}")
+            if self._violations(rec, st):
+                continue
             sid = (rec.get("sac"), rec.get("sic"))
             if cat in (2, 34):
                 if "tod" in rec:

@@ -1,0 +1,35 @@
+{
+ "source": "https://raw.githubusercontent.com/CroatiaControlLtd/asterix/",
+ "commit": "790bca7ed96be11bb001c3c395092f61851d9af7",
+ "license": "GPL-2.0 (nu se redistribuie; doar descarcate pentru teste)",
+ "files": {
+  "cat_001_002.pcap": {
+   "path": "install/sample_data/cat_001_002.pcap",
+   "sha256": "773c76a1f763541abe4d2ed77581d279465196d5a5896ed30790be2b1058ebb4"
+  },
+  "cat_034_048.pcap": {
+   "path": "asterix/sample_data/cat_034_048.pcap",
+   "sha256": "7f4e9a37641bfa27022ee95ba52f178e68260c1b7e83d6a0e4720a96b3a2cc3d"
+  },
+  "cat_062_065.pcap": {
+   "path": "asterix/sample_data/cat_062_065.pcap",
+   "sha256": "fc250f563ec96369d10f960f870a305041b85e05842d987e68dbd3c4d079df13"
+  },
+  "asterix.pcap": {
+   "path": "install/sample_data/asterix.pcap",
+   "sha256": "76c22bae36ea7548dd070af04a7a745ececb604df2de2c9c82df65f399189479"
+  },
+  "cat_001_002_json.txt": {
+   "path": "install/sample_output/cat_001_002_json.txt",
+   "sha256": "59e0ecae123f38dccbfcbc123f3018963cca2c4c2e538a68ba4c97aa8d8e283c"
+  },
+  "cat_034_048.txt": {
+   "path": "install/sample_output/cat_034_048.txt",
+   "sha256": "9f8143c7b8577ccfc1e4fd3bea18fff3872b9b45871a22db1765a7a3f2fa94f3"
+  },
+  "cat_062_065_json.txt": {
+   "path": "install/sample_output/cat_062_065_json.txt",
+   "sha256": "8bf035895d44b97f32622b6f806a9c71b6a766783821a73a9cb86dcbbb5983ed"
+  }
+ }
+}
