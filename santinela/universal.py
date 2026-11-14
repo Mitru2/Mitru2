@@ -1001,6 +1001,11 @@ class UniversalAdapter:
             st.note("STANAG 4607: confirmati semnul vitezei pe linia de vizare (pozitiv = departare)")
             if dw.exercise:
                 st.note("pachete marcate EXERCITIU")
+            if dw.data_kind != "real":
+                st.note(f"dwell-uri cu date {dw.data_kind} (antet P7) ignorate")
+                continue
+            if dw.geoid_model not in (None, "nespecificat"):
+                st.note(f"inaltimile D32.6 sunt fata de {dw.geoid_model} (segmentul job): neconvertite la elipsoid")
             f = dw.fields
             if key not in self._by_name:
                 self._auto_site(key, f["sensor_lat"], f["sensor_lon"], "radar", st)

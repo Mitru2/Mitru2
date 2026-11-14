@@ -5,14 +5,14 @@ Decodeaza pachete (antet de 32 de octeti + segmente) si extrage din segmentele
 inaltime, viteza pe linia de vizare, incertitudini, clasificare.
 Segmentul "mission" (tip 1) da data de referinta pentru ora dwell-ului.
 
-Codari (AEDP-7): SA32 = unghi cu semn, LSB 90/2^30 grd; BA32 = unghi fara semn,
-LSB 360/2^32 grd; SA16 LSB 90/2^14; BA16 LSB 360/2^16; B16 = 8 biti intregi +
-8 biti fractie. Masca de existenta: 64 de biti, bitul cel mai semnificativ = D2,
-apoi D3 ... D31, D32.1 ... D32.18, ultimii 16 biti rezervati.
+Codari (AEDP-7), verificate pe disectorul Wireshark packet-stanag4607.c: SA32 = unghi cu
+semn, LSB 45/2^30 grd (+-90); BA32 = unghi fara semn, LSB 360/2^32 grd; SA16 si BA16 LSB
+90/2^14 grd; B16 = valoare/128. Masca de existenta: 64 de biti, bitul cel mai semnificativ =
+D2, apoi D3 ... D31, D32.1 ... D32.18, ultimii 16 biti rezervati.
 
-ATENTIE: scris dupa editia publica a standardului, nu verificat pe trafic real.
-Se valideaza pe inregistrari de la senzorul tinta (in special conventia de semn a
-vitezei pe linia de vizare si tabelul de clasificare D32.10).
+Segmentul job (tip 5) da modelul de teren si de geoid folosit pentru inaltimi (D32.6);
+indicatorul din antet distinge operatie/exercitiu si date reale/simulate/sintetizate.
+Ramane de validat pe trafic real de la senzorul tinta.
 """
 from __future__ import annotations
 
@@ -50,12 +50,16 @@ CLASSIFICATION = {  # D32.10 (conventia 'stanag4607.classification'); NU exista 
     0: "fara informatie", 1: "vehicul pe senile", 2: "vehicul cu roti", 3: "aeronava cu aripa rotativa",
     4: "aeronava cu aripa fixa", 5: "rotator stationar", 6: "maritim", 7: "baliza", 8: "amfibiu",
     9: "persoana", 10: "vehicul", 11: "animal", 12: "retur multiplu mare (sol)",
-    13: "retur multiplu mare (maritim)", 126: "altul", 127: "necunoscut",
+    13: "retur multiplu mare (maritim)", 126: "altul", 127: "necunoscut", 143: "dispozitiv de marcare (tagging)",
 }
+GEOID_MODELS = {0: "nespecificat", 1: "EGM96", 2: "GEO96", 3: "Pamant plat"}
+DATA_KIND = {0: "real", 1: "simulat", 2: "sintetizat"}
 
 
 def classification(code: int) -> tuple[str, bool]:
     """(eticheta, simulat). Valorile 128-255 sunt aceleasi clase marcate simulat (254 altul, 255 necunoscut)."""
+    if code == 143:
+        return CLASSIFICATION[143], False
     if code >= 128:
         base = {254: 126, 255: 127}.get(code, code - 128)
         return CLASSIFICATION.get(base, f"cod {code}"), True
@@ -73,7 +77,7 @@ def _val(kind: str, b: bytes) -> float:
     if kind == "S":
         return int.from_bytes(b, "big", signed=True)
     if kind == "SA32":
-        return int.from_bytes(b, "big", signed=True) * 90.0 / 2 ** 30
+        return int.from_bytes(b, "big", signed=True) * 45.0 / 2 ** 30
     if kind == "BA32":
         v = int.from_bytes(b, "big") * 360.0 / 2 ** 32
         return v - 360.0 if v > 180.0 else v
@@ -82,7 +86,7 @@ def _val(kind: str, b: bytes) -> float:
     if kind == "BA16":
         return int.from_bytes(b, "big") * 360.0 / 2 ** 16
     if kind == "B16":
-        return b[0] + b[1] / 256.0
+        return int.from_bytes(b, "big") / 128.0
     raise Stanag4607Error(f"tip {kind} ({n} octeti)")
 
 
@@ -92,7 +96,7 @@ def _enc(kind: str, v: float, n: int) -> bytes:
     if kind == "S":
         return int(round(v)).to_bytes(n, "big", signed=True)
     if kind == "SA32":
-        return int(round(v * 2 ** 30 / 90.0)).to_bytes(4, "big", signed=True)
+        return int(round(v * 2 ** 30 / 45.0)).to_bytes(4, "big", signed=True)
     if kind == "BA32":
         return (int(round((v % 360.0) * 2 ** 32 / 360.0)) % 2 ** 32).to_bytes(4, "big")
     if kind == "SA16":
@@ -100,7 +104,7 @@ def _enc(kind: str, v: float, n: int) -> bytes:
     if kind == "BA16":
         return (int(round((v % 360.0) * 2 ** 16 / 360.0)) % 2 ** 16).to_bytes(2, "big")
     if kind == "B16":
-        return bytes([int(v), int(round((v - int(v)) * 256)) % 256])
+        return int(round(v * 128)).to_bytes(2, "big")
     raise Stanag4607Error(kind)
 
 
@@ -113,6 +117,9 @@ class Dwell:
     fields: dict
     targets: list = field(default_factory=list)
     reference_date: tuple | None = None  # (an, luna, zi) din segmentul mission
+    data_kind: str = "real"              # real | simulat | sintetizat (antet, P7)
+    geoid_model: str | None = None       # din segmentul job: referinta inaltimilor D32.6
+    edition: str = ""
 
     @property
     def tod(self) -> float:
@@ -125,7 +132,8 @@ def looks_like_4607(buf: bytes) -> bool:
     pos = 0
     try:
         while pos < len(buf):
-            if buf[pos:pos + 2] not in (b"30", b"31", b"20", b"21"):
+            # P1: editia ('0'-'3' STANAG, '4'-'9' AEDP-4607 A-F) si versiunea, ambele cifre ASCII
+            if not (0x30 <= buf[pos] <= 0x39 and 0x30 <= buf[pos + 1] <= 0x39):
                 return False
             size = struct.unpack(">I", buf[pos + 2:pos + 6])[0]
             if size < PACKET_HEADER or pos + size > len(buf):
@@ -141,6 +149,7 @@ def decode(buf: bytes) -> list[Dwell]:
     out = []
     pos = 0
     ref_date = None
+    geoid = {}  # job id -> model de geoid
     while pos < len(buf):
         if len(buf) - pos < PACKET_HEADER:
             raise Stanag4607Error("antet de pachet trunchiat")
@@ -150,6 +159,10 @@ def decode(buf: bytes) -> list[Dwell]:
             raise Stanag4607Error("dimensiune de pachet invalida")
         nationality = hdr[6:8].decode("ascii", "replace")
         exercise = hdr[13] >= 128  # 128+ = exercitiu (AEDP-7, P7)
+        kind = DATA_KIND.get(hdr[13] & 0x7F, f"cod {hdr[13]}")
+        job_id = struct.unpack(">I", hdr[28:32])[0]
+        e = hdr[0]
+        edition = f"STANAG {chr(e)}" if e <= 0x33 else f"AEDP-4607 {chr(e + 13)}"
         platform = hdr[14:24].decode("ascii", "replace").strip("\x00 ")
         mission = struct.unpack(">I", hdr[24:28])[0]
         i, end = pos + PACKET_HEADER, pos + size
@@ -161,9 +174,14 @@ def decode(buf: bytes) -> list[Dwell]:
             body = buf[i + SEGMENT_HEADER:i + ssize]
             if stype == 1 and len(body) >= 39:
                 ref_date = (struct.unpack(">H", body[35:37])[0], body[37], body[38])
+            elif stype == 5 and len(body) >= 68:
+                geoid[struct.unpack(">I", body[0:4])[0]] = GEOID_MODELS.get(body[67], f"cod {body[67]}")
             elif stype == 2:
                 d = _dwell(body, platform, mission, nationality, exercise)
                 d.reference_date = ref_date
+                d.data_kind = kind
+                d.geoid_model = geoid.get(job_id)
+                d.edition = edition
                 out.append(d)
             i += ssize
         pos = end
@@ -200,7 +218,8 @@ def _dwell(body: bytes, platform, mission, nationality, exercise) -> Dwell:
 
 
 def encode_dwell_packet(fields: dict, targets: list, platform: str = "SIM", mission: int = 1,
-                        nationality: str = "RO", exercise: bool = True, ref_date=(2026, 11, 12)) -> bytes:
+                        nationality: str = "RO", exercise: bool = True, ref_date=(2026, 11, 12),
+                        data_kind: int = 0, job_id: int = 0, geoid_model: int | None = None) -> bytes:
     """Pachet de test: segment mission + un segment dwell (doar pentru simulare si teste)."""
     names = DWELL_FIELDS + TARGET_FIELDS
     present = set(fields) | {k for t in targets for k in t}
@@ -220,8 +239,12 @@ def encode_dwell_packet(fields: dict, targets: list, platform: str = "SIM", miss
     mbody = b"PLAN".ljust(12, b" ") + b"FLIGHT".ljust(12, b" ") + bytes([0]) + b"CFG".ljust(10, b" ") \
         + struct.pack(">HBB", *ref_date)
     mseg = bytes([1]) + (len(mbody) + SEGMENT_HEADER).to_bytes(4, "big") + mbody
-    size = PACKET_HEADER + len(mseg) + len(dwell)
+    jseg = b""
+    if geoid_model is not None:
+        jbody = job_id.to_bytes(4, "big") + bytes(63) + bytes([geoid_model])
+        jseg = bytes([5]) + (len(jbody) + SEGMENT_HEADER).to_bytes(4, "big") + jbody
+    size = PACKET_HEADER + len(mseg) + len(jseg) + len(dwell)
     hdr = (b"31" + size.to_bytes(4, "big") + nationality.encode()[:2].ljust(2) + bytes([5]) + b"XN"
-           + b"\x00\x00" + bytes([128 if exercise else 0]) + platform.encode()[:10].ljust(10, b"\x00")
-           + mission.to_bytes(4, "big") + (0).to_bytes(4, "big"))
-    return hdr + mseg + dwell
+           + b"\x00\x00" + bytes([(128 if exercise else 0) | data_kind]) + platform.encode()[:10].ljust(10, b"\x00")
+           + mission.to_bytes(4, "big") + job_id.to_bytes(4, "big"))
+    return hdr + mseg + jseg + dwell

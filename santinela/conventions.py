@@ -54,10 +54,14 @@ _C = [
     Convention("stanag4607.d32_7", "viteza pe linia de vizare in cm/s, corectata pentru miscarea platformei, "
                "pozitiva la departarea de senzor",
                "raport", "AEDP-7, reprodus in raportul DTIC RADARSAT-2 (citat in raport)"),
-    Convention("stanag4607.classification", "1 senile, 2 roti, 3 aripa rotativa, 4 aripa fixa, 6 maritim, 7 baliza, "
-               "8 amfibiu, 9 persoana, 10 vehicul, 11 animal, 12/13 retur multiplu mare, 126 altul, 127 necunoscut; "
-               "+128 simulat; NU exista clasa UAS",
-               "raport", "disectorul Wireshark packet-stanag4607.c (citat in raport)"),
+    Convention("stanag4607.classification", "1 senile, 2 roti, 3 aripa rotativa, 4 aripa fixa, 5 rotator stationar, "
+               "6 maritim, 7 baliza, 8 amfibiu, 9 persoana, 10 vehicul, 11 animal, 12/13 retur multiplu mare, "
+               "126 altul, 127 necunoscut, +128 simulat, 143 dispozitiv de marcare; NU exista clasa UAS",
+               "verificat", "disectorul Wireshark packet-stanag4607.c (stanag4607_target_vals)"),
+    Convention("stanag4607.codings", "SA32 LSB 45/2^30 grd; BA32 360/2^32; SA16/BA16 90/2^14; B16 = v/128; "
+               "masca D2...D32.18 de la bitul cel mai semnificativ; P7: +128 exercitiu, +1 simulat, +2 sintetizat; "
+               "geoidul in segmentul job (octetul 67)", "verificat",
+               "disectorul Wireshark packet-stanag4607.c; verificarea a gasit si corectat SA32 si B16"),
     Convention("stanag4607.mdv", "D31 in decimetri/s", "raport", "DTIC ADA479333 (citat in raport)"),
     # ---------------- ASTERIX
     Convention("asterix.editions", "editii curente: CAT048 1.32, CAT062 1.21, CAT021 2.7, CAT034 1.29, CAT015 1.2, "

@@ -171,3 +171,53 @@ def test_conventions_registry():
     assert "departarea" in CONVENTIONS["stanag4607.d32_7"].value
     for key in ("sapient.framing", "asterix.editions", "nffi.standard", "tak.protocol_v1", "app6.sidc"):
         assert key in CONVENTIONS
+
+
+# ---------------------------------------------------------------- STANAG 4607 pe formulele Wireshark
+def _manual_dwell(lat_raw: int, lon_raw: int, b16_raw: int, kind: int = 0, version: bytes = b"31",
+                  geoid: int | None = None) -> bytes:
+    """Pachet construit octet cu octet (fara encoderul proiectului)."""
+    import struct as st
+    mask = 0
+    # D2-D9, D24-D27, D32.1-D32.3; Wireshark: D32_1 = bitul 4*8+1 (de la coada) = indicele 30 de la cap
+    for k in list(range(8)) + [22, 23, 24, 25] + [30, 31, 32]:
+        mask |= 1 << (63 - k)
+    body = mask.to_bytes(8, "big")
+    body += st.pack(">HHBHI", 1, 1, 0, 1, 36_000_000)        # D2-D6: un raport, ora 10:00:00
+    body += st.pack(">iIi", lat_raw, lon_raw, 0)             # D7-D9 senzor
+    body += st.pack(">iIHH", lat_raw, lon_raw, b16_raw, 0)   # D24-D27
+    body += st.pack(">HiI", 7, lat_raw, lon_raw)             # D32.1-D32.3 tinta
+    seg = bytes([2]) + (len(body) + 5).to_bytes(4, "big") + body
+    job = b""
+    if geoid is not None:
+        jb = (5).to_bytes(4, "big") + bytes(63) + bytes([geoid])
+        job = bytes([5]) + (len(jb) + 5).to_bytes(4, "big") + jb
+    hdr = version + (32 + len(job) + len(seg)).to_bytes(4, "big") + b"RO" + bytes([5]) + b"XN" + b"\x00\x00" \
+        + bytes([kind]) + b"PLAT".ljust(10, b"\x00") + (1).to_bytes(4, "big") + (5).to_bytes(4, "big")
+    return hdr + job + seg
+
+
+def test_4607_codings_match_wireshark_formulas():
+    # Wireshark prt_sa32: x = (int32)v / 2^30 * 45 ; prt_ba32: x = v / 2^30 * 90 ; prt_kilo: v / 128
+    pkt = _manual_dwell(2 ** 29, 2 ** 28, 2560)
+    dw = stanag4607.decode(pkt)[0]
+    assert dw.fields["sensor_lat"] == pytest.approx(22.5)
+    assert dw.fields["sensor_lon"] == pytest.approx(22.5)
+    assert dw.fields["dwell_range_half_km"] == pytest.approx(20.0)
+    assert dw.targets[0]["lat"] == pytest.approx(22.5) and dw.targets[0]["report_index"] == 7
+    assert stanag4607.decode(_manual_dwell(-(2 ** 30), 0, 0))[0].fields["sensor_lat"] == pytest.approx(-45.0)
+
+
+def test_4607_header_editions_data_kind_and_geoid():
+    assert stanag4607.looks_like_4607(_manual_dwell(0, 0, 0, version=b"40"))    # AEDP-4607 editia A
+    assert not stanag4607.looks_like_4607(b"XY" + _manual_dwell(0, 0, 0)[2:])
+    dw = stanag4607.decode(_manual_dwell(0, 0, 0, version=b"40", geoid=1))[0]
+    assert dw.edition == "AEDP-4607 A" and dw.geoid_model == "EGM96"
+    ad = UniversalAdapter(frame=FR, tod_ref=TOD0)
+    lat_raw = int(45.27 * 2 ** 30 / 45)
+    lon_raw = int(28.46 * 2 ** 32 / 360)
+    assert ad.feed(_manual_dwell(lat_raw, lon_raw, 0, kind=129)) == []            # exercitiu, simulat
+    assert any("simulat" in n for n in ad.sources["4607:PLAT"].notes)
+    out = ad.feed(_manual_dwell(lat_raw, lon_raw, 0, kind=128, geoid=1))         # exercitiu, real
+    assert len(out) == 1 and out[0].lat == pytest.approx(45.27, abs=1e-6)
+    assert any("EGM96" in n for n in ad.sources["4607:PLAT"].notes)
