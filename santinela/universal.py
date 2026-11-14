@@ -1315,13 +1315,24 @@ class UniversalAdapter:
     # ---------- SAPIENT ----------
     def _sapient(self, objs: list, received_at) -> list:
         out = []
+        from .sapient_proto import validate as sapient_validate
         for o in objs:
+            unknown: list = []
+            if self._sapient_schema is not None and any(k[:1].islower() and any(ch.isupper() for ch in k)
+                                                        for k in o):
+                try:  # forma JSON canonica protobuf (camelCase): conversie exacta dupa schema
+                    o = self._sapient_schema.from_json("SapientMessage", o, unknown=unknown)
+                except (ProtoError, ValueError) as e:
+                    self.errors.append(("sapient", f"JSON SAPIENT invalid: {e}"))
+                    continue
             o = _snake_keys(o)
             node = str(o.get("node_id") or o.get("source_id") or "SAPIENT")
             st = self._status(f"SAPIENT:{node}", "sapient")
             prof = self.sapient_nodes.setdefault(node, {"zone": None, "vel_kph": False, "types": [], "icd": None})
+            if unknown:
+                st.note(f"campuri necunoscute in BSI Flex 335 v2.0, ignorate: {', '.join(unknown[:5])}")
             if self._sapient_schema is not None:
-                issues = self._sapient_schema.validate("SapientMessage", o)
+                issues = sapient_validate(self._sapient_schema, o)
                 if issues:
                     self.sapient_deviations[node].extend(issues)
                     st.note(f"abateri de la BSI Flex 335 v2.0 (campuri obligatorii/UUID/ULID): {len(issues)} "
@@ -1403,9 +1414,16 @@ class UniversalAdapter:
             st.note("abatere: coordinate_system nespecificat; presupus LAT_LNG_DEG_M")
             cs = "LAT_LNG_DEG_M"
         if cs == "UTM_M":
-            if abs(x) <= 180.0 and abs(y) <= 90.0:
-                st.note("abatere: valori lat/lon in campuri UTM (cunoscuta din mostrele Dstl); interpretate ca grade")
-                return y, x
+            if abs(x) <= 180.0 and abs(y) <= 180.0:
+                # abatere cunoscuta din mostrele Dstl (care pun latitudinea pe x): ordinea e ambigua; alegem
+                # varianta plauzibila cea mai apropiata de nod sau de zona de operare si o semnalam
+                cands = [(lat, lon) for lat, lon in ((x, y), (y, x)) if abs(lat) <= 90.0]
+                site = self._by_name.get(node) if node else None
+                ref = (site.lat, site.lon) if site is not None else (self.frame.lat0, self.frame.lon0)
+                lat, lon = min(cands, key=lambda c: (c[0] - ref[0]) ** 2 + (c[1] - ref[1]) ** 2)
+                st.note("abatere: valori lat/lon in campuri UTM (cunoscuta din mostrele Dstl); ordinea x/y "
+                        "aleasa dupa apropierea de nod/zona de operare")
+                return lat, lon
             zone = loc.get("utm_zone") or (self.sapient_nodes.get(node, {}).get("zone") if node else None)
             parsed = self._utm_zone(zone, node, st)
             if parsed is None:

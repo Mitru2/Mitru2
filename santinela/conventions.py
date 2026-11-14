@@ -44,8 +44,14 @@ _C = [
                "verificat", "velocity.proto + registration.proto (VelocityType.enu_velocity_units)"),
     Convention("sapient.range_rate", "nu exista camp standard pentru viteza radiala (Doppler) in v2.0",
                "verificat", "detection_report.proto (campurile 1-23)"),
-    Convention("sapient.validation", "is_mandatory / is_uuid / is_ulid din (field_options) si (oneof_options)",
-               "verificat", "proto_options.proto, ValidationOptions"),
+    Convention("sapient.validation", "is_mandatory / is_uuid / is_ulid din (field_options) si (oneof_options), plus "
+               "regulile suplimentare ale validatorului Dstl (icd_version, dependent_nodes, concurrent_tasks, "
+               "follow_object_id, prediction_location, derived_detection, increderi 0-1)", "verificat",
+               "proto_options.proto + SapientServices/Data/Validation (Test Harness Dstl, 6a2999d); pe cei 231 de "
+               "vectori oficiali: 38/38 valide fara abateri, 191/193 invalide detectate (2 vectori depasiti)"),
+    Convention("sapient.utm_latlon_quirk", "lat/lon pusi in campuri UTM_M (mostrele Dstl, cu latitudinea pe x): "
+               "ordinea aleasa dupa plauzibilitate si apropierea de nod/zona de operare, cu nota de abatere",
+               "verificat", "toate cele 203 locatii din vectorii Dstl au aceasta forma (x~51.2, y~-1.8, zona 30U)"),
     Convention("sapient.framing", "fiecare mesaj precedat de lungimea lui pe 4 octeti, little-endian; TCP obligatoriu",
                "raport", "BSI Flex 335 v2.0 §4.1-4.2 (citat in raport)"),
     Convention("sapient.covariance", "covarianta circula ca perechi text in object_info: type='covariance_xx' etc.",

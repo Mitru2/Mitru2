@@ -157,7 +157,8 @@ def _track():
 @pytest.mark.skipif(not OFFICIAL, reason="SANTINELA_SAPIENT_PROTO nu e setat (fisierele oficiale Dstl)")
 class TestOfficialSchema:
     @pytest.fixture(scope="class")
-    def sch(self):
+    @staticmethod
+    def sch():
         from santinela.sapient_proto import load_schema
         return load_schema(OFFICIAL)
 

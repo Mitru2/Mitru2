@@ -332,6 +332,63 @@ class ProtoSchema:
         full = message if message in self.messages else self.find(message)
         return _schema_validate(self, self.messages[full], d, full.rsplit(".", 1)[-1])
 
+    def from_json(self, message: str, obj: dict, unknown: list | None = None) -> dict:
+        """Forma JSON canonica protobuf (camelCase, Timestamp RFC 3339, int64 ca sir, bytes in base64)
+        -> dictionarul folosit de encode/validate (numele din .proto).
+
+        Cu ``unknown`` (o lista), campurile necunoscute sunt ignorate si trecute in lista
+        (ca ``ignore_unknown_fields`` din bibliotecile protobuf); fara ea, ridica eroare.
+        """
+        full = message if message in self.messages else self.find(message)
+        self._unknown = unknown
+        try:
+            return self._from_json(self.messages[full], obj, full.rsplit(".", 1)[-1])
+        finally:
+            self._unknown = None
+
+    def _from_json(self, msg: MessageDef, obj: dict, path: str = "") -> dict:
+        by_json = {}
+        for f in msg.fields.values():
+            by_json[f.name] = f
+            by_json[_camel(f.name)] = f
+        out = {}
+        for key, val in obj.items():
+            f = by_json.get(key)
+            if f is None:
+                if getattr(self, "_unknown", None) is not None:
+                    self._unknown.append(f"{path}.{key}")
+                    continue
+                raise ProtoError(f"{msg.full}: camp necunoscut {key}")
+            if val is None:
+                continue
+            p = f"{path}.{f.name}"
+            if f.type == "map":
+                out[f.name] = {k: self._json_value(f.map_kv[1], v, p) for k, v in val.items()}
+            elif f.repeated:
+                out[f.name] = [self._json_value(f.type, v, p) for v in val]
+            else:
+                out[f.name] = self._json_value(f.type, val, p)
+        return out
+
+    def _json_value(self, typ, v, path=""):
+        if typ == "google.protobuf.Timestamp" and isinstance(v, str):
+            return _rfc3339(v)
+        if typ in self.messages:
+            return self._from_json(self.messages[typ], v, path)
+        if typ in self.enums:
+            return v
+        if typ in ("int64", "uint64", "sint64", "fixed64", "sfixed64", "int32", "uint32", "sint32",
+                   "fixed32", "sfixed32"):
+            return int(v)
+        if typ in ("double", "float"):
+            return float(v) if not isinstance(v, str) or v not in ("NaN", "Infinity", "-Infinity") else float(v.replace("Infinity", "inf"))
+        if typ == "bytes":
+            import base64
+            return base64.b64decode(v)
+        if typ == "bool":
+            return bool(v)
+        return v
+
     def _packed(self, typ, payload) -> list:
         out, i = [], 0
         b = memoryview(payload)
@@ -344,6 +401,23 @@ class ProtoSchema:
                 raw, i = _varint(b, i)
                 out.append(self._value(typ, 0, raw, None))
         return out
+
+
+def _camel(name: str) -> str:
+    parts = name.split("_")
+    return parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+
+
+def _rfc3339(v: str) -> dict:
+    """Timestamp RFC 3339 (cu pana la 9 zecimale) -> {"seconds", "nanos"}."""
+    from datetime import datetime, timezone
+    m = re.match(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)$", v.strip())
+    if not m:
+        raise ProtoError(f"Timestamp invalid: {v!r}")
+    tz = "+00:00" if m.group(3) == "Z" else m.group(3)
+    dt = datetime.fromisoformat(m.group(1) + tz).astimezone(timezone.utc)
+    nanos = int((m.group(2) or "0").ljust(9, "0"))
+    return {"seconds": int(dt.timestamp()), "nanos": nanos}
 
 
 # ------------------------------------------------------------------ codare si validare dupa schema

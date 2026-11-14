@@ -111,7 +111,8 @@ class SapientFusionNode:
         responses = []
         if "registration" in msg:
             reg = msg["registration"]
-            issues = self.schema.validate("SapientMessage", msg)
+            from .sapient_proto import validate
+            issues = validate(self.schema, msg)
             accept = not (self.strict and issues)
             self.nodes[sender] = {"registered": accept, "issues": issues,
                                   "types": [d.get("node_type") for d in reg.get("node_definition", []) or []]}
@@ -282,6 +283,7 @@ class SapientServer:
         asyncio.run_coroutine_threadsafe(down(), self._loop).result(5)
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(5)
+        self._loop.close()
 
 
 def send_upstream(host: str, port: int, messages: list[bytes], timeout: float = 5.0) -> list[bytes]:
