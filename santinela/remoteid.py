@@ -11,7 +11,7 @@ Purtatori radio (dupa ASTM F3411 / biblioteca opendroneid, Apache-2.0):
 * Wi-Fi Beacon: element "vendor specific" (0xDD), OUI FA:0B:BC, tip 0x0D, contor, pachet;
 * Wi-Fi NAN: atributul Service Descriptor cu Service ID 88 69 19 9D 92 09
   (primii 6 octeti din SHA-256("org.opendroneid.remoteid")), apoi contor si pachet.
-Autentificarea (mesajul 2) e semnalata, dar NU e verificata criptografic.
+Autentificarea (mesajul 2) e verificata in santinela/drip.py (DRIP, RFC 9575).
 """
 from __future__ import annotations
 
@@ -55,6 +55,11 @@ def _messages(buf: bytes) -> list[bytes]:
         n = buf[2]
         return [buf[3 + k * MSG:3 + (k + 1) * MSG] for k in range(n)]
     return [buf[i:i + MSG] for i in range(0, len(buf), MSG)]
+
+
+def messages(buf: bytes) -> list[bytes]:
+    """Mesajele de 25 de octeti dintr-un mesaj, un lot sau un pachet (0xF)."""
+    return _messages(bytes(buf))
 
 
 def decode(buf: bytes) -> list[RemoteIdState]:

@@ -77,6 +77,7 @@ class Track:
     negative_applied: set = field(default_factory=set)
     _ctx: dict | None = field(default=None, repr=False)
     cooperative_id: str | None = None   # identitate cooperativa (Remote ID, ADS-B), daca s-a potrivit
+    cooperative_auth: str | None = None  # starea autentificarii Remote ID (DRIP, RFC 9575 anexa A)
     identity_override: str | None = None  # identitate APP-6 stabilita de operator (vezi trackmodel)
     identity_author: str | None = None
 

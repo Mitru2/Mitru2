@@ -51,6 +51,7 @@ def to_geojson(tracker, now: float, destinations: list | None = None, observers:
             "emissions": tr.emissions,
             "altitude_floor_m": tr.altitude_floor,
             "cooperative_id": tr.cooperative_id,
+            "cooperative_auth": tr.cooperative_auth,
             "speed_kmh": round(float(math.hypot(*tr.state.x[2:])) * 3.6),
         }
         if len(xs) > 1:

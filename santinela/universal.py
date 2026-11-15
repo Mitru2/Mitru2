@@ -36,6 +36,7 @@ from . import adsb as adsbmod
 from . import misb as misbmod
 from . import cot as cotmod
 from . import nffi as nffimod
+from . import drip as dripmod
 from . import remoteid as ridmod
 from . import stanag4607
 from .asterix import (AsterixError, Cat048Adapter, decode_block, iter_blocks, looks_like_asterix, strip_oradis,
@@ -70,6 +71,7 @@ class CooperativeReport:
     operator_lon: float | None = None
     operator_id: str | None = None
     self_id: str | None = None
+    auth: str | None = None             # Remote ID: starea autentificarii DRIP a emitatorului
 
 
 @dataclass
@@ -402,12 +404,15 @@ class UniversalAdapter:
     decimal_year: float | None = None                   # pentru WMM; implicit data curenta
     opportunity_min_alt_m: float = 300.0                # doar aeronave peste aceasta inaltime
     apply_sdps_bias: bool = True                        # aplica biasurile PSR din CAT063 la plot-urile radarului
+    utc_ref_unix: float | None = None                   # ora Unix pentru t = 0: verifica ferestrele VNB/VNA DRIP
+    drip_epoch: int = dripmod.F3411_EPOCH               # epoca marcajelor VNB/VNA (F3411: 2019-01-01)
 
     def __post_init__(self):
         if self.frame is None:
             self.frame = self.tracker.frame if self.tracker is not None else LocalFrame()
         self.stats: Counter = Counter()
         self.errors: list = []
+        self.drip = dripmod.DripVerifier(epoch=self.drip_epoch)   # autentificarea Remote ID
         self.sources: dict[str, SourceStatus] = {}
         self.cooperative: list[CooperativeReport] = []
         self._by_asterix: dict = {}
@@ -456,8 +461,13 @@ class UniversalAdapter:
                 raise ValueError(f"sursa {src.get('sensor_id')}: lat/lon lipsesc din configurare")
             sites.append(RadarSite(**vals))
         profiles = [JsonProfile.from_dict(p) for p in cfg.get("json_profiles", [])]
-        return cls(sites=sites, tod_ref=cfg.get("tod_ref", 0.0), cat048_mode=cfg.get("cat048_mode", "plots"),
-                   json_profiles=profiles, **kw)
+        ad = cls(sites=sites, tod_ref=cfg.get("tod_ref", 0.0), cat048_mode=cfg.get("cat048_mode", "plots"),
+                 json_profiles=profiles, **kw)
+        for a in cfg.get("drip_trust_anchors", []):
+            # autoritati DRIP de incredere: {"det": "2001:3f:...", "key": "<cheia Ed25519 hex>", "name": ...}
+            det = bytes.fromhex("".join(f"{int(g or '0', 16):04x}" for g in a["det"].split(":")))
+            ad.drip.trust_anchor(det, bytes.fromhex(a["key"]), a.get("name", "configurare"))
+        return ad
 
     def add_site(self, site: RadarSite) -> RadarSite:
         if site.center is None:
@@ -1469,9 +1479,36 @@ class UniversalAdapter:
         return best
 
     # ---------- Remote ID ----------
+    def _drip(self, buf: bytes, received_at, source, st) -> None:
+        """Autentificarea DRIP: intai mesajele in clar (pentru Manifest/Wrapper), apoi paginile."""
+        msgs = ridmod.messages(buf)
+        pack = bytes(buf)[0] >> 4 == 0xF
+        now = (self.utc_ref_unix + received_at) if self.utc_ref_unix is not None and received_at is not None else None
+        for m in msgs:
+            if m[0] >> 4 != 2:
+                self.drip.observe(source, m)
+        for m in msgs:
+            if m[0] >> 4 != 2:
+                continue
+            for res in self.drip.feed_page(source, m, now, msgs if pack else None):
+                self.stats["autentificari_remoteid"] += 1
+                st.note(f"autentificare {res.get('format', res['tip'])}: {res['rezultat']}"
+                        + (f" ({res['motiv']})" if res.get("motiv") else ""))
+                if res.get("nota"):
+                    st.note(res["nota"])
+                if res["rezultat"] == "Unverified":
+                    self.errors.append(("remoteid", f"{source}: autentificare Remote ID invalida "
+                                        f"({res.get('motiv')}): posibila falsificare"))
+                if self.tracker is not None:
+                    self.tracker._log(self.tracker.now, "autentificare_remoteid", emitator=source,
+                                      rezultat=res["rezultat"], format=res.get("format", res["tip"]),
+                                      stare=res["stare_emitator"])
+
     def _remoteid(self, buf: bytes, received_at, source) -> list:
         st = self._status(source, "remoteid")
         st.site = source
+        self._drip(buf, received_at, source, st)
+        auth = self.drip.state(source)
         approx = (self.tod_ref + (received_at or 0.0)) % 86400.0
         for loc in ridmod.decode(buf):
             if loc.ts_tenths_hour is None:
@@ -1486,11 +1523,10 @@ class UniversalAdapter:
                                   loc.lat, loc.lon, loc.alt_geo, vx, vy, source="RemoteID")
             c.operator_lat, c.operator_lon = loc.operator_lat, loc.operator_lon
             c.operator_id, c.self_id = loc.operator_id, loc.self_id
+            c.auth = auth
             self._add_coop(c)
             if loc.operator_lat is not None:
                 st.note("mesaj System: pozitia operatorului e disponibila (operator_lat/lon)")
-            if loc.auth_present:
-                st.note("mesaj Authentication prezent: NU e verificat criptografic")
             st.accepted += 1
         st.note("drone cooperative (Remote ID): marcheaza traseele potrivite, nu intra ca tinte")
         return []
@@ -1561,6 +1597,8 @@ class UniversalAdapter:
                 pos = tr.state_at(c.t).x[:2]
                 if np.linalg.norm(pos - self.frame.to_xy(c.lat, c.lon)) <= max_dist:
                     tr.cooperative_id = f"{c.source}:{c.icao}"
+                    # RFC 9575 6.4.2: semnatura valida + pozitie corelata cu senzorii = verificat
+                    tr.cooperative_auth = c.auth if c.auth not in (None, "None") else None
                     found[tr.track_id] = tr.cooperative_id
                     break
         return found

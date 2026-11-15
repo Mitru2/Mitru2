@@ -106,6 +106,23 @@ _C = [
     Convention("misb.st0903", "pachet de locatie (tag 17): lat/lon IMAPB 4 o., HAE IMAPB(-900,19000,2), sigma "
                "IMAPB(0,650,2), rho IMAPB(-1,1,2); versiunea < 4 = codare liniara veche; decalaje IMAPB(+-19.2,3)",
                "verificat", "exemplele din anexa ST 0903 (prin testele jmisb, MIT)"),
+    # ---------------- Remote ID: autentificare (ASTM F3411 / DRIP)
+    Convention("remoteid.auth_page", "octetul 1: tipul autentificarii (4 biti sus) si pagina (4 biti jos); pagina 0: "
+               "LastPageIndex, Length, Timestamp (uint32 LE, secunde de la 2019-01-01) si 17 octeti de date; "
+               "paginile 1-15: 23 de octeti", "verificat",
+               "opendroneid-core-c (opendroneid.h, ODID_Auth_encoded_page_zero/non_zero; Apache-2.0), citit ca date"),
+    Convention("drip.formats", "SAM 0x01 Link (aviz parinte: VNB, VNA, DET copil, cheie copil, DET parinte, "
+               "semnatura), 0x02 Wrapper (max. 4 mesaje), 0x03 Manifest (hash-uri de 8 o.), 0x04 Frame; semnatura "
+               "Ed25519 peste VNB|VNA|dovada|DET; hash de mesaj = cSHAKE128(mesaj, 64, '', 'Remote ID Auth Hash'); "
+               "FEC = paritate XOR pe paginile de 23 o.", "verificat",
+               "RFC 9575 sectiunile 3-5; exemplul B.2.1 verificat complet (semnaturi, 8 hash-uri, FEC octet cu octet)"),
+    Convention("drip.det_hash", "DET = 2001:30::/28 | RAA 14 b | HDA 14 b | suita 8 b | cSHAKE128(primii 8 o. din DET "
+               "| cheia Ed25519 de 32 o., 64, '', Context ID 00B5A69C...); HOST_ID fara eticheta curbei",
+               "verificat", "RFC 9374 sectiunea 3.5; varianta reproduce DET-ul din RFC 9575 B.2.1 (cu eticheta, nu)"),
+    Convention("drip.example_deviations", "exemplul RFC 9575 B.2.1 se abate de la text: Link cu SAM 0x04 (nu 0x01), "
+               "hash-ul manifestului curent include hash-ul Link-ului, hash-ul Link-ului e peste aviz (fara SAM), "
+               "VNB/VNA in epoca Unix; codul urmeaza textul si accepta variantele exemplului, cu nota; epoca e "
+               "configurabila (drip_epoch)", "verificat", "comparatie text - exemplu in RFC 9575"),
     # ---------------- simbologie
     Convention("app6.sidc", "SIDC de 20 de cifre (MIL-STD-2525D/APP-6D); UAV = set 01 (aer), entitate 110300",
                "presupus", "MIL-STD-2525D (din memorie); de confirmat pe APP-6 nationala"),

@@ -70,6 +70,11 @@ def identity_of(track) -> tuple[str, str | None]:
     if getattr(track, "identity_override", None):
         return track.identity_override, getattr(track, "identity_author", None)
     if track.cooperative_id:
+        auth = getattr(track, "cooperative_auth", None)
+        if auth in ("Unverified", "Questionable", "Conflicting"):
+            return "suspect", f"automat (Remote ID cu autentificare invalida: {auth})"
+        if auth == "Trusted":
+            return "neutru", "automat (Remote ID autentificat DRIP, cheie de incredere)"
         return "neutru", "automat (identitate cooperativa)"
     if track.status == "confirmat":
         return "suspect", "automat (SPRT)"
