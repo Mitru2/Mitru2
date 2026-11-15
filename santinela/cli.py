@@ -4,6 +4,7 @@
     python -m santinela.cli --scenario val --out out/
     python -m santinela.cli --calibrate exercitiu.csv
     python -m santinela.cli --inspect captura.bin flux.nmea --config surse.json
+    python -m santinela.cli --fetch-sapient sapient_proto --fetch-sapient-vectors vectori_dstl
 """
 from __future__ import annotations
 
@@ -39,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="conventiile semantice folosite de decodoare, cu statutul si sursa fiecareia")
     ap.add_argument("--fetch-sapient", metavar="DIR", default=None,
                     help="descarca definitiile oficiale SAPIENT v2.0 si le verifica pe amprente")
+    ap.add_argument("--fetch-sapient-vectors", metavar="DIR", default=None,
+                    help="descarca vectorii de test ai validatorului Dstl si le verifica amprentele")
+    ap.add_argument("--fetch-asterix-captures", metavar="DIR", default=None,
+                    help="descarca capturile ASTERIX reale de test (Croatia Control) si le verifica amprentele")
     ap.add_argument("--sapient-server", metavar="PORT", type=int, default=None,
                     help="porneste nodul de fuziune SAPIENT (cere --sapient-proto)")
     ap.add_argument("--sapient-proto", metavar="DIR", default=None, help="directorul cu .proto oficiale verificate")
@@ -50,9 +55,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{c['statut']:9s}] {c['cheie']}: {c['valoare']}\n            sursa: {c['sursa']}")
         return 0
 
-    if a.fetch_sapient:
-        from .sapient_proto import fetch
-        print(f"descarcat si verificat: {fetch(a.fetch_sapient)}")
+    if a.fetch_sapient or a.fetch_sapient_vectors or a.fetch_asterix_captures:
+        if a.fetch_sapient:
+            from .sapient_proto import fetch
+            print(f"definitii SAPIENT descarcate si verificate: {fetch(a.fetch_sapient)}")
+        if a.fetch_sapient_vectors:
+            from .sapient_proto import fetch_vectors
+            print(f"vectori de test Dstl descarcati si verificati: {fetch_vectors(a.fetch_sapient_vectors)}")
+        if a.fetch_asterix_captures:
+            from .pcap import fetch_asterix_captures
+            print(f"capturi ASTERIX descarcate si verificate: {fetch_asterix_captures(a.fetch_asterix_captures)}")
         return 0
 
     if a.sapient_server is not None:

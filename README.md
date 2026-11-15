@@ -5,208 +5,107 @@ fuziunea rapoartelor umane („am văzut / am auzit”) cu detecțiile senzorilo
 operațională comună (COP), pentru dronele care zboară sub orizontul radar.
 
 Totul este explicabil și reproductibil: aceleași intrări dau aceleași ieșiri, bit cu bit.
+Versiunea 0.3.0 · Python ≥ 3.10 · dependențe: numpy, scipy.
+
+## Documentație
+
+| Document | Conținut |
+|---|---|
+| [docs/OPERARE.md](docs/OPERARE.md) | instalare, linia de comandă, configurarea surselor, SAPIENT, ieșirea TAK, harta |
+| [docs/ARHITECTURA.md](docs/ARHITECTURA.md) | fluxul datelor, modulele, deciziile de proiectare, ce nu e implementat |
+| [docs/STANDARDE.md](docs/STANDARDE.md) | ASTERIX, SAPIENT, STANAG 4607, MISB, CoT/TAK, NFFI, Remote ID, ADS-B, NMEA; ce rămâne |
+| [docs/VERIFICARE.md](docs/VERIFICARE.md) | criteriile planului, verificarea decodoarelor pe surse autoritative, erorile găsite |
+| [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | componente și date de la terți, licențe |
 
 ## Pornire rapidă
 
 ```bash
 pip install -e '.[test]'
-python -m pytest                                        # 125 de teste, ~20 s
+python -m pytest                                        # 341 de teste trec, 9 sărite (~17 s)
 python -m santinela.cli --scenario dunare --out out/    # scenariul „Dunăre” (cu radar, detecții)
 python -m santinela.cli --scenario dunare --radar-mode tracks --out out/tr   # radarul trimite trasee
 python -m santinela.cli --scenario val --out out/val    # val dens de 12 ținte
 python -m santinela.cli --calibrate exercitiu.csv       # Faza 0 pe date reale
-python -m santinela.cli --inspect captura.bin flux.nmea # ce format are, ce configurare lipseste
+python -m santinela.cli --inspect captura.pcap flux.nmea  # ce format are, ce configurare lipsește
+python -m santinela.cli --conventions                   # convențiile decodoarelor, cu sursa lor
 ```
 
 Harta: deschideți `viewer/index.html` și încărcați `out/cop.geojson`
 (sau serviți directorul rădăcină cu `python -m http.server` și deschideți `/viewer/`).
+Rularea scrie și `out/jurnal.json` (audit) și `out/cot.xml` (trasee confirmate pentru TAK).
 
 ## Ce este implementat
 
+### Nucleul de urmărire
+
 | Plan v2 | Modul | Stare |
 |---|---|---|
-| Faza 0 – conversie raport→măsurătoare, parametri pe populație cu IÎ 95% | `measurements.py`, `calibration.py` | ✅ verificat numeric față de Monte Carlo |
-| Viteze pe clase din fișe (`drones.js`, `ttx.speed`), poartă × 1,3, plic necunoscut 235 m/s | `speeds.py` | ✅ |
+| Faza 0 – conversie raport→măsurătoare, parametri pe populație cu IÎ 95 % | `measurements.py`, `calibration.py` | ✅ verificat numeric față de Monte Carlo |
+| Viteze pe clase (`drones.js`, `ttx.speed`), poartă × 1,3, plic necunoscut 235 m/s | `speeds.py` | ✅ |
 | Faza 1 – IMM (2 modele CV), porți χ² + cinematice, GNN cu regulă de ambiguitate, SPRT | `imm.py`, `tracker.py`, `track.py` | ✅ |
-| Îmb. 1 – rapoarte întârziate prin re-filtrare din tampon; anulare unire cu același cod | `track.py`, `tracker.py` | ✅ |
+| Îmb. 1 – rapoarte întârziate prin re-filtrare din tampon; anularea unirilor | `track.py`, `tracker.py` | ✅ |
 | Îmb. 2 – traseu netezit Rauch–Tung–Striebel | `imm.py`, `track.py` | ✅ |
 | Îmb. 3 – corecția de sunet (343 m/s) | `measurements.py` | ✅ |
 | Îmb. 4 – model de eroare și încredere Beta(2,1) pe observator | `observers.py` | ✅ |
-| Îmb. 5 – informație negativă de la posturi fixe (P_D 0,7) | `tracker.py`, `sensors.py` | ✅ |
+| Îmb. 5 – informație negativă de la posturi fixe și radare (după altitudine) | `tracker.py`, `sensors.py`, `radar.py` | ✅ |
 | Îmb. 6 – destinații probabile (distribuții-punte), strat separat „umbră” | `destinations.py` | ✅ |
 | Îmb. 7 – mod grup pentru valuri dense | `groups.py` | ✅ |
-| Faza 2 – hartă: traseu netezit, elipse, con T+5/10/15, grupuri | `export.py`, `viewer/` | ✅ GeoJSON + vizualizator Leaflet |
+| Faza 2 – hartă: traseu netezit, elipse, con T+5/10/15, grupuri | `export.py`, `viewer/` | ✅ GeoJSON + Leaflet |
 | Faza 3 – confirmare cu regulă și autor în jurnal | `tracker.py` | ✅ |
-| Faza 6 – fuziune de trasee prin intersecția covarianțelor; atributul „emisie mesh/4G” | `fusion.py`, `track.py` | ✅ (fără poarta SAPIENT) |
-| Scenariul de test „Dunăre” | `sim.py` | ✅ date publice, observatori și radar fictivi |
-| Radare: detecții polare, Doppler, trasee radar prin CI, acoperire după altitudine, înregistrare | `radar.py`, `tracker.py` | ✅ |
-| Adaptor ASTERIX CAT048 / CAT062 / CAT021 | `asterix.py` | ✅ după specificația publică; **de validat pe înregistrări reale** |
-| Adaptor universal (ASTERIX, SAPIENT, STANAG 4607, CoT, NFFI, Remote ID, NMEA, JSON), cu detectarea formatului | `universal.py` | ✅ |
+| Faza 6 – fuziune de trasee (intersecția covarianțelor), nod de fuziune SAPIENT | `fusion.py`, `sapient_node.py` | ✅ |
+| Radare: detecții polare, Doppler, trasee radar, acoperire după altitudine, înregistrare | `radar.py`, `tracker.py` | ✅ |
+| Scenariile „Dunăre” și „val” | `sim.py` | ✅ date publice, observatori și radar fictivi |
 
-### Criterii de acceptare acoperite de teste
+### Interoperabilitate
 
-- **Faza 0**: conversia raport→măsurătoare coincide cu Monte Carlo (medie < 25 m la 2,5 km,
-  abateri standard < 5%); intervalele de încredere de 95% conțin valorile reale.
-- **Faza 1**: un raport sosit cu întârziere dă exact traseul de la sosirea la timp; anularea unei
-  uniri dă exact traseele dinainte; reluarea scenariului dă același rezultat și același jurnal.
-- **Faza 2**: elipsa de 95% conține ținta simulată în 95% din cazuri (cerința: 90–98%);
-  scenariul cu 12 ținte paralele trece în mod grup.
-- **Faza 3**: fiecare confirmare are regula și autorul în jurnal; un observator cu rapoarte false
-  repetate nu poate confirma singur un traseu.
-- **Faza 7**: destinația corectă are probabilitatea maximă înainte de jumătatea drumului în ≥ 70% din cazuri.
-- **Radar**: ASTERIX pe octeți construiți manual după specificație, Doppler (eroarea vitezei radiale
-  scade de peste 2 ori), trasee radar printr-un viraj de 90° rămân un singur traseu local, penalizarea
-  radar doar peste altitudinea minimă, înregistrarea găsește 1° / 120 m / 0,8 s pe o țintă cooperativă.
-- **Scenariul „Dunăre”**: 4 ținte → exact 4 trasee confirmate (seed-urile 1–3 în teste, 1–8 verificate manual, ambele moduri radar),
-  ținta cu modem mesh marcată „posibil operator în buclă”, observatorul care raportează numai fals
-  nu confirmă nimic.
+Un singur punct de intrare, `UniversalAdapter.feed(mesaj)`, recunoaște formatul, decodează,
+normalizează semantica (unități, nord, datum, HAE→MSL, declinație magnetică) și spune pe surse
+ce configurare lipsește. Detalii: [docs/STANDARDE.md](docs/STANDARDE.md).
 
-## Radare
+| Standard / format | Stare |
+|---|---|
+| **ASTERIX** CAT001/002/015/021/034/048/062/205/247, încadrare ORADIS | ✅ decodor generat din asterix-specs; ediție per sursă; domenii verificate |
+| **SAPIENT** BSI Flex 335 v2.0 (protobuf, JSON, XML) | ✅ nod de fuziune bidirecțional, validare pe schema oficială Dstl |
+| **STANAG 4607** (GMTI) | ✅ decodare și codare |
+| **MISB ST 0601 / 0903 / 1201** (STANAG 4609), KLV din MPEG-TS | ✅ |
+| **Cursor-on-Target** + **TAK Protocol v1**, **APP-6D / 2525D** | ✅ intrare și ieșire (UDP multicast, TCP, TLS) |
+| **NFFI** 1.3/1.4 (ADatP-36) | ✅ forțe proprii; FFI MTF semnalat |
+| **Remote ID** (ASTM F3411 / EN 4709-002): BT 4/5, Wi-Fi Beacon, NAN | ✅ |
+| **ADS-B** Mode S DF17/18 (Beast, AVR, SBS, readsb) | ✅ CRC-24, CPR; calibrarea radarelor |
+| **NMEA 0183** (`TTM`, `TLL`, `HDT`), JSON de producător | ✅ |
+| **pcap / pcapng** | ✅ |
+| **WMM2025** (declinație), **EGM96** (geoid) | ✅ |
+| Link 16, JREAP, Link 11/22, VMF, OTH-Gold, ADatP-3 | ⛔ doar prin gateway acreditat (punct de extensie `register_decoder`) |
 
-- **Intrare**: blocuri ASTERIX CAT048 → `Cat048Adapter` → `RadarPlot` (I048/040, opțional Doppler
-  I048/120 și înălțime I048/110 sau nivel de zbor I048/090) sau `RadarTrackReport` (I048/161 + 042 +
-  200 + 210). Radarele se identifică prin SAC/SIC; ora zilei se raportează la `tod_ref`, cu trecere
-  peste miezul nopții. Alte categorii ASTERIX din flux sunt ignorate.
-- **Detecții**: distanța oblică devine distanță la sol când se știe înălțimea; poziția și covarianța
-  se calculează prin cuadratură. Viteza radială intră în filtru ca măsurătoare neliniară (EKF).
-- **Trasee radar**: se fuzionează prin intersecția covarianțelor (erorile actualizărilor succesive
-  ale aceluiași traseu sunt corelate). Numărul de traseu al radarului e respectat: actualizările
-  lui merg la același traseu local, inclusiv la manevre.
-- **Acoperire după altitudine**: tăcerea radarului scade scorul unui traseu tentativ doar dacă ținta
-  e raportată deasupra altitudinii minime de detecție a radarului și în interiorul orizontului radar
-  (4/3 din raza Pământului). Fără altitudine raportată se presupune „foarte jos”, deci radarul nu
-  penalizează nimic — cazul Luncavița. Un raport ulterior „foarte jos” anulează retroactiv penalizarea.
-- **Încredere**: radarele și ceilalți senzori au și ei scor Beta; un radar cu verdicte false
-  repetate nu mai confirmă singur un traseu, iar densitatea lui de alarme false crește.
-- **Înregistrare** (eroare de azimut, de distanță, decalaj de ceas): cele mai mici pătrate ponderate,
-  față de o referință fără radarul calibrat. Corecția se aplică doar dacă erorile standard sunt sub
-  0,25° / 40 m / 0,5 s. Referința bună sunt țintele cooperative (`Tracker.register_radar`, ex. ADS-B);
-  cu o referință din câteva rapoarte umane estimarea e refuzată și jurnalul arată de ce.
-- **Scenariul „Dunăre”**: radarul (min. 300 m) nu vede țintele A, B, C (foarte jos) și vede ținta D
-  (Orlan-10 la 1200 m); ecourile false de păsări nu produc trasee confirmate.
+### Verificare
 
-Rămân de verificat cu producătorul/operatorul radarului: convenția de semn pentru Doppler,
-referința înălțimii, altitudinea minimă reală din diagrama de acoperire, densitatea de alarme false.
-CAT062, CAT021, SAPIENT și NMEA sunt acum acoperite de adaptorul universal (mai jos).
+341 de teste trec (350 cu datele oficiale descărcate). Decodoarele sunt verificate pe surse
+independente: asterix-specs și trafic ASTERIX real (1940/1940 câmpuri identice cu decodorul de
+referință), cei 231 de vectori ai validatorului SAPIENT Dstl, formulele disectorului Wireshark
+pentru STANAG 4607, exemplele din standardele MISB, valorile oficiale de test WMM2025 și NGA
+EGM96. Verificarea a găsit și corectat 7 erori de specificație. Detalii:
+[docs/VERIFICARE.md](docs/VERIFICARE.md).
 
-## Adaptorul universal
+## Ce rămâne
 
-Un singur punct de intrare pentru toate sursele: `UniversalAdapter.feed(mesaj)` recunoaște formatul
-și întoarce intrări pentru tracker.
+- **Faza 4** (OpenTAKServer, VPN, PWA), **Faza 5** (rutare, vizibilitate pe relief, sarcini),
+  **Faza 8** (AI) și **Faza 9** (calibrare în mod umbră) cer infrastructură, date de relief,
+  acces la senzori sau date din exploatare.
+- ASTERIX CAT129/016/063/065, STANAG 4676, DIS/CAP, verificarea criptografică a autentificării
+  Remote ID.
+- **Capturi reale de la fiecare echipament** și confirmarea cu producătorul: ediția UAP, semnul
+  Doppler, referința înălțimii, altitudinea minimă, alarmele false.
 
-| Format | Recunoscut după | Ce produce | Ce cere |
-|---|---|---|---|
-| ASTERIX CAT048 | blocuri cu lungime coerentă | detecții sau trasee radar | poziția radarului (SAC/SIC → lat, lon, antenă) |
-| ASTERIX CAT062 | idem | trasee de sistem | nimic dacă are I062/105 (WGS-84); altfel punctul de referință |
-| ASTERIX CAT021 | idem | aeronave ADS-B → calibrarea radarelor | nimic |
-| alte categorii ASTERIX (CAT034, CAT240 …) | idem | sunt ignorate, apar în raport | – |
-| SAPIENT JSON (BSI Flex 335) | chei `detectionReport` / `statusReport` | detecții sau trasee | poziția nodului (se învață din `statusReport`) |
-| SAPIENT binar (protobuf) | antet de 4 octeți cu lungimea | – | un decodor protobuf dat ca `sapient_decoder` |
-| NMEA 0183 (`TTM`, `TLL`, `HDT`) | `$…*hh`, cu suma de control verificată | trasee radar navale | poziția radarului pentru `TTM`; capul pentru relevmente relative |
-| JSON de producător | orice alt JSON | detecții sau trasee | un profil (`JsonProfile`); fără el, câmpurile sunt ghicite după nume |
+Parametrii din `config.py` sunt puncte de pornire alese, nu cifre din literatură; se calibrează
+în mod umbră. Punctele din secțiunea „Ce rămâne neverificat” a planului rămân valabile.
 
-- **Sursele cu poziții absolute** (lat/lon) sunt acceptate imediat, dar fără informație negativă până
-  la configurarea acoperirii. **Sursele polare** (distanță/azimut) așteaptă poziția senzorului.
-- **Aeronavele cooperative** (ADS-B, plot-uri SSR/Mode S, trasee de sistem cu cod de transponder) nu
-  intră în trackerul de drone. Plot-urile Mode S ale unui radar se împerechează cu ADS-B după adresa
-  ICAO, iar radarul se calibrează automat (azimut, distanță, ceas).
-- `requirements()` spune, pe surse, ce lipsește; `config_template()` dă un șablon de completat, iar
-  `UniversalAdapter.from_config(fișier)` îl încarcă. Din linia de comandă: `--inspect` și `--config`.
-- Clasificările sigure de non-dronă din SAPIENT (pasăre, persoană, vehicul, ≥ 0,8) sunt ignorate.
+## Structura depozitului
 
-Nesigur, de confirmat pe documentul de interfață al fiecărei surse: în SAPIENT, `Location.x` e
-longitudinea (`sapient_x_is_lon`); ediția UAP a fiecărui echipament ASTERIX; unitățile fluxurilor JSON
-ghicite. Captura PCAP nu e citită direct: se extrage întâi conținutul UDP/TCP.
-
-## Standarde NATO și conexe
-
-### Normalizare semantică
-
-Decodoarele se bazează pe convenții scrise într-un singur loc, `santinela/conventions.py`, fiecare cu
-statut și sursă: **verificat** (citit din sursa oficială), **raport** (din raportul de
-interoperabilitate din 13.11.2026, care citează sursa) sau **presupus** (de confirmat).
-`python -m santinela.cli --conventions` le afișează. Cele patru întrebări deschise:
-
-| Convenție | Valoare | Statut |
-|---|---|---|
-| SAPIENT `Location.x` | longitudine (LAT_LNG), est (UTM) | verificat în `location.proto` oficial |
-| STANAG 4607 D32.7 | cm/s, corectată pentru mișcarea platformei, pozitivă la depărtare | raport (AEDP-7 prin DTIC) |
-| Ediția ASTERIX | detectată din CAT247 sau declarată per SAC/SIC; majora trebuie să coincidă cu tabelele | raport (CAT048 1.32, CAT062 1.21, CAT021 2.7, CAT034 1.29) |
-| NFFI / FFT | NFFI XML 1.3/1.4 citit; FFI MTF (APP-11) recunoscut, cere gateway | raport (ADatP-36, FMN Spiral 5) |
-
-### Ce e implementat
-
-| Standard | Stare | Ce face |
-|---|---|---|
-| **SAPIENT** BSI Flex 335 v2.0 (baza AEDP-4869) | ✅ **bidirecțional** | nod de fuziune: Registration/Ack, Status, Detection, Alert/Ack, Task (`look_at`)/TaskAck, Error; nod-copil spre un nod superior; TCP cu prefix de lungime |
-| **ASTERIX** CAT048/062/021, CAT001/002/034, **CAT247** | ✅ | ediție per sursă; poziția radarului din I034/120 |
-| **ADS-B direct** (Beast, AVR, SBS, readsb JSON) | ✅ | Mode S DF17/18 cu CRC și CPR; ținte de oportunitate pentru calibrarea radarelor |
-| **Remote ID** (ASTM F3411 / EN 4709-002) | ✅ | Bluetooth 4/5, Wi-Fi Beacon, Wi-Fi NAN; poziția operatorului (System) |
-| **Cursor-on-Target** + **TAK Protocol v1** | ✅ intrare și ieșire | UID stabil, elipsă 95 %, `stale`, ștergere; UDP multicast 239.2.3.1:6969, TCP, TLS |
-| **APP-6D / MIL-STD-2525D** | ✅ | identitate și SIDC de 20 de cifre; „ostil” doar prin decizia operatorului |
-| **STANAG 4607** | ✅ | tabelul de clasificare corectat (fără clasă UAS); Doppler ambiguu (wrap) neutilizat |
-| **NFFI** (STANAG 5527 / ADatP-36) | ✅ XML | poziții proprii; FFI MTF semnalat |
-
-**SAPIENT** se validează pe definițiile oficiale Dstl, care nu sunt incluse în proiect (licența lor nu a
-putut fi confirmată):
-
-```bash
-python -m santinela.cli --fetch-sapient sapient_proto          # descarcă și verifică amprentele SHA-256
-python -m santinela.cli --sapient-server 5020 --sapient-proto sapient_proto
-SANTINELA_SAPIENT_PROTO=sapient_proto python -m pytest          # + testele pe schema oficială
 ```
-
-Amprentele sunt fixate în `santinela/data/sapient_bsi_flex_335_v2_0.json`; dacă depozitul Dstl se
-schimbă, încărcarea se oprește până la revizuirea diferențelor. Decodorul raportează pe fiecare nod
-abaterile de la câmpurile obligatorii, UUID și ULID, dar rămâne tolerant (`strict=True` respinge).
-Registration-ul și mesajele trimise de SANTINELA trec validarea pe schema oficială fără abateri.
-
-### Legături de date cu distribuție controlată
-
-Link 16, JREAP, Link 11/22, VMF, OTH-Gold și ADatP-3 nu se implementează în afara mediului acreditat.
-Arhitectura recomandată: un **gateway acreditat** (comercial sau național) livrează spre SANTINELA
-CoT, ASTERIX CAT062 sau SAPIENT, iar SANTINELA le citește ca pe orice altă sursă. Punctul de extensie
-`declare_source()` / `register_decoder()` rămâne doar pentru un decodor scris în mediul acreditat.
-
-### Ce rămâne (P2/P3)
-
-ASTERIX CAT129/015/016/205/063/065; MISB ST 0601/0903 (EO/IR, VMTI); STANAG 4676; conversia
-HAE↔MSL cu modelul EGM; declinația magnetică automată (WMM); verificarea criptografică a
-autentificării Remote ID; validarea cu Test Harness-ul Dstl și pe capturi reale de la fiecare echipament.
-
-## Decizii de proiectare
-
-- **Starea unui traseu este o funcție pură de tamponul lui** (măsurători + evenimente de informație
-  negativă, sortate după oră și id). Rapoartele întârziate se inserează la locul lor și traseul se
-  re-filtrează; un raport care ajunge în ordine folosește o cale incrementală care face aceleași
-  operații în aceeași ordine, deci rezultatul e identic.
-- **GNN pe scanări**: o scanare = rapoartele unei surse la același moment. Surse diferite pot vedea
-  aceeași dronă în același ciclu, deci nu intră în aceeași atribuire unu-la-unu.
-- **Regula de ambiguitate**: dacă un al doilea traseu are cost de asociere aproape la fel de bun
-  (marjă 2,0), raportul nu se atribuie automat; intră în coada operatorului și contează pentru
-  pragul de mod grup. Excepție: un traseu tânăr (≤ 2 rapoarte) ale cărui rapoarte intră toate în
-  poarta traseului ales e un duplicat și se unește automat (anulabil).
-- **Regula de confirmare**: SPRT peste prag **și** (≥ 2 surse independente, sau un senzor, sau o
-  singură sursă cu încredere ≥ 0,6). Densitatea de rapoarte false λ_FA a sursei crește odată cu
-  rapoartele marcate false, deci scorul unui observator nesigur nici nu mai urcă.
-- **Conversia raportului** folosește cuadratură Gauss–Hermite 7×7 pe (azimut, ln distanță): o
-  transformată unscented simplă subestima împrăștierea transversală cu ~12% la σ_ln = 0,35.
-- **Netezirea** RTS rulează pe momentele combinate ale IMM (aproximare standard); conul și
-  poziția curentă rămân cele filtrate.
-- **Destinațiile** se calculează ca verosimilitate a predicției filtrului de a ajunge în fiecare
-  destinație, marginalizată peste ora de sosire. Rezultatul e un strat separat și nu intră în con.
-
-## Ce nu este implementat (și de ce)
-
-- **Faza 4** (OpenTAKServer, VPN, punte CoT, PWA cu Capacitor), **Faza 5** (Valhalla, vizibilitate
-  pe relief, atribuirea sarcinilor), **adaptorul SAPIENT** din Faza 6 și **Faza 8** (componente AI)
-  cer infrastructură, date de relief, acces la senzori sau decizii de acreditare care nu există în
-  acest depozit. `sensors.py` conține matricea senzor–variantă cu valorile necunoscute marcate
-  `None`, de completat cu producătorul.
-- **Faza 9** (calibrare și activarea automatului) cere date din mod umbră; `Tracker.merge_metrics()`
-  dă deja rata de uniri automate anulate (criteriul < 2%).
-- `drones.js` nu este în acest depozit: tabelul din plan e copiat în `speeds.py`, iar
-  `--drones-js cale/drones.js` îl înlocuiește la pornire cu valorile din fișe.
-
-Parametrii din `config.py` sunt puncte de pornire alese, nu cifre din literatură; se calibrează în
-mod umbră. Punctele din secțiunea „Ce rămâne neverificat” a planului rămân valabile.
+santinela/            pachetul Python (nucleu + adaptoare + ieșiri)
+santinela/data/       WMM2025, grila EGM96 regională, manifeste cu amprente pentru datele oficiale
+tests/                testele (pytest)
+tools/                generatorul specificațiilor ASTERIX + licența asterix-specs
+viewer/               vizualizatorul hărții (Leaflet)
+docs/                 documentația
+```
