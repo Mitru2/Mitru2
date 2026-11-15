@@ -79,7 +79,7 @@ class Tracker:
 
     # ------------------------------------------------------------------ util
     def _log(self, t: float, event: str, **kw) -> None:
-        self.journal.append({"t": round(float(t), 3), "event": event, **kw})
+        self.journal.append({"t": round(float(t), 3) if math.isfinite(t) else None, "event": event, **kw})
 
     def _new_track(self, m: Measurement) -> Track:
         self._n_track += 1
@@ -342,6 +342,17 @@ class Tracker:
         site = self._radar_by_id[radar_id]
         reg = self.registrations[radar_id]
         reg.accumulate(registration_rows(site, triples), n_ref)
+        if reg.external:
+            # inregistrarea vine din SDPS (CAT063): estimarea proprie doar o verifica
+            ok = reg.solve(self.params.min_reports_own_params, apply=False)
+            if ok:
+                b_az, b_r, c = reg.solution
+                self._log(self.now, "inregistrare_radar_comparatie", radar=radar_id, n=reg.n, source=source,
+                          externa=reg.external, bias_az_deg=round(math.degrees(b_az), 3),
+                          bias_range_m=round(b_r, 1), clock_offset_s=round(c, 3),
+                          dif_az_deg=round(math.degrees(b_az - reg.bias_az), 3),
+                          dif_range_m=round(b_r - reg.bias_range, 1))
+            return ok
         ok = reg.solve(self.params.min_reports_own_params)
         sig = None if reg.sigma is None else [round(math.degrees(reg.sigma[0]), 3),
                                                round(float(reg.sigma[1]), 1), round(float(reg.sigma[2]), 3)]
@@ -353,6 +364,44 @@ class Tracker:
             self._log(self.now, "inregistrare_radar_insuficienta", radar=radar_id, n=reg.n, source=source,
                       sigma=sig)
         return ok
+
+    def set_registration(self, radar_id: str, bias_az: float, bias_range: float, range_gain: float = 0.0,
+                         source: str = "extern") -> bool:
+        """Inregistrare primita din afara (ex. biasurile SDPS din CAT063): azimut (rad), distanta (m), castig.
+
+        Corectia urmeaza formulele CAT063: theta = theta_m - b_az, rho = (rho_m - b_r) / (1 + castig).
+        Estimarea proprie continua sa ruleze, dar doar compara (jurnal: inregistrare_radar_comparatie).
+        """
+        reg = self.registrations.get(radar_id)
+        if reg is None:
+            return False
+        new = (bias_az, bias_range, range_gain, source)
+        if (reg.bias_az, reg.bias_range, reg.range_gain, reg.external) == new:
+            return False
+        reg.bias_az, reg.bias_range, reg.range_gain, reg.external = new
+        reg.estimated = True
+        self._log(self.now, "inregistrare_radar_externa", radar=radar_id, source=source,
+                  bias_az_deg=round(math.degrees(bias_az), 4), bias_range_m=round(bias_range, 1),
+                  range_gain=range_gain)
+        return True
+
+    def set_sensor_state(self, radar_id: str, active: bool, reason: str = "") -> bool:
+        """Starea operationala a unui senzor: tacerea unui senzor inactiv nu e informatie negativa."""
+        site = self._radar_by_id.get(radar_id)
+        if site is None or site.active == active:
+            return False
+        site.active = active
+        self._log(self.now, "stare_senzor", radar=radar_id, activ=active, motiv=reason)
+        return True
+
+    def reset_external_tracks(self, radar_id: str, reason: str = "") -> int:
+        """Numerele de traseu ale unei surse nu mai sunt valabile (ex. repornirea procesorului radar)."""
+        keys = [k for k in self.ext_map if k[0] == radar_id]
+        for k in keys:
+            del self.ext_map[k]
+        if keys:
+            self._log(self.now, "numere_traseu_resetate", radar=radar_id, n=len(keys), motiv=reason)
+        return len(keys)
 
     def _learn_observer_errors(self, tr: Track) -> None:
         times, xs, _ = tr.smoothed()

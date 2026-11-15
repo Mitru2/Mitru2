@@ -23,7 +23,10 @@ def rule_var(rule):
 def content(c):
     t = c["tag"]
     if t == "ContentRaw": return ("raw",)
-    if t == "ContentTable": return ("table",)
+    if t == "ContentTable":
+        item, path = CURRENT[0].split(":", 1)
+        TABLES.setdefault(item, {})[path] = {int(k): v for k, v in c["contents"]}
+        return ("table",)
     if t == "ContentInteger":
         return ("int", c["contents"]["signedness"]["tag"] == "Signed")
     if t == "ContentQuantity":
@@ -55,7 +58,9 @@ def content(c):
 
 BITS = [0]
 CURRENT = [""]
+CTX = ["", ""]      # (articol, prefixul subarticolului compus)
 DROPPED = []
+TABLES = {}         # "I063/060" -> {"CON": {0: "Operational", ...}}
 
 
 def elements(var, prefix=""):
@@ -63,7 +68,7 @@ def elements(var, prefix=""):
     t = var["tag"]
     if t == "Element":
         BITS[0] = var["contents"]["bitSize"]
-        CURRENT[0] = CURRENT[0].split(":")[0] + ":" + prefix.rstrip(".")
+        CURRENT[0] = CTX[0] + ":" + (CTX[1] + prefix).rstrip(".")
         r = var["contents"]["rule"]
         cont = content(r["contents"]) if r["tag"] == "ContextFree" else content((r["contents"].get("default") or r["contents"]["cases"][0][1]))
         return [(prefix.rstrip("."), var["contents"]["bitSize"], cont)]
@@ -74,7 +79,8 @@ def elements(var, prefix=""):
                 out.append(("", it["contents"], ("spare",)))
             else:
                 nm = it["contents"]["name"]
-                out += elements(rule_var(it["contents"]["rule"]), nm + ".")
+                # grupurile imbricate pastreaza prefixul (ex. TTF.EP / SPO.EP), altfel numele se suprapun
+                out += elements(rule_var(it["contents"]["rule"]), prefix + nm + ".")
         return out
     raise ValueError(t)
 
@@ -105,7 +111,11 @@ def spec(var):
         subs = []
         for x in var["contents"]:
             if x is None: subs.append(None)
-            else: subs.append((x["name"], spec(rule_var(x["rule"]))))
+            else:
+                old = CTX[1]
+                CTX[1] = old + x["name"] + "."
+                subs.append((x["name"], spec(rule_var(x["rule"]))))
+                CTX[1] = old
         return ("C", subs)
     raise ValueError(t)
 
@@ -117,7 +127,8 @@ for path in sys.argv[1:]:
     d = json.load(open(path))["contents"]
     items = {}
     for it in d["catalogue"]:
-        CURRENT[0] = f'I{d["category"]:03d}/{it["name"]}'
+        CURRENT[0] = CTX[0] = f'I{d["category"]:03d}/{it["name"]}'
+        CTX[1] = ""
         items[it["name"]] = (it["title"], spec(rule_var(it["rule"])))
     u = d["uap"]
     if u["tag"] == "Uap":
@@ -152,3 +163,7 @@ for line in DROPPED:
     print(line, file=sys.stderr)
 print("CATEGORIES = ", end="")
 pprint.pprint(cats, width=120, compact=True, sort_dicts=True)
+print()
+print("# Semnificatia valorilor din tabele: articol -> element (cu subarticolul compus) -> {valoare: text}")
+print("TABLES = ", end="")
+pprint.pprint(TABLES, width=120, compact=True, sort_dicts=True)

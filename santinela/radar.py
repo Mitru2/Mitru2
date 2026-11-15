@@ -123,12 +123,15 @@ class RadarRegistration:
     bias_az: float = 0.0
     bias_range: float = 0.0
     clock_offset: float = 0.0        # t_real = t_marcat + clock_offset
+    range_gain: float = 0.0          # r_corectat = (r_masurat - bias_range) / (1 + range_gain)  (I063/090)
+    external: str | None = None      # sursa unei inregistrari primite (ex. "CAT063 SAC25/SIC100")
     n: int = 0
     n_ref: int = 0
     _AtWA: np.ndarray = field(default_factory=lambda: np.zeros((3, 3)), repr=False)
     _AtWb: np.ndarray = field(default_factory=lambda: np.zeros(3), repr=False)
     estimated: bool = False
     sigma: np.ndarray | None = None  # erori standard (rad, m, s) ale ultimei solutii
+    solution: tuple | None = None    # ultima solutie (b_az, b_r, ceas), aplicata sau nu
 
     def accumulate(self, rows: list[tuple[np.ndarray, np.ndarray, np.ndarray]], n_ref: int) -> None:
         """Fiecare rand: (A 2x3, reziduu 2, covarianta 2x2) cu reziduu ~ A @ [b_az, b_r, c]."""
@@ -140,7 +143,8 @@ class RadarRegistration:
         self.n_ref += n_ref
 
     def solve(self, min_n: int, max_sigma: tuple = (math.radians(0.25), 40.0, 0.5),
-              max_cond: float = 1e10) -> bool:
+              max_cond: float = 1e10, apply: bool = True) -> bool:
+        """Rezolva sistemul; cu ``apply=False`` doar calculeaza (``solution``), fara sa schimbe corectia."""
         if self.n < min_n or self.n_ref == 0:
             return False
         d = np.sqrt(np.maximum(np.diag(self._AtWA), 1e-30))
@@ -153,8 +157,12 @@ class RadarRegistration:
         self.sigma = np.sqrt(np.diag(cov))
         if np.any(self.sigma > np.asarray(max_sigma)):
             return False
-        self.bias_az, self.bias_range, self.clock_offset = (float(v) for v in sol)
-        self.estimated = True
+        self.solution = tuple(float(v) for v in sol)
+        if apply:
+            self.bias_az, self.bias_range, self.clock_offset = self.solution
+            self.range_gain = 0.0
+            self.external = None
+            self.estimated = True
         return True
 
 
@@ -168,7 +176,7 @@ def convert_plot(plot: RadarPlot, site: RadarSite, reg: RadarRegistration | None
                  model: ObserverModel | None = None, params: Params = DEFAULT) -> Measurement:
     reg = reg or RadarRegistration()
     az = math.radians(plot.azimuth_deg) - reg.bias_az
-    r = plot.range_m - reg.bias_range
+    r = (plot.range_m - reg.bias_range) / (1.0 + reg.range_gain)
     if plot.height_m is not None:
         dh = plot.height_m - site.antenna_height
         r = math.sqrt(max(r * r - dh * dh, 0.0))  # distanta la sol

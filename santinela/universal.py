@@ -401,6 +401,7 @@ class UniversalAdapter:
     gmti_max_speed: float = 235.0                       # m/s; wrap mai mic decat dublul ei -> Doppler ambiguu
     decimal_year: float | None = None                   # pentru WMM; implicit data curenta
     opportunity_min_alt_m: float = 300.0                # doar aeronave peste aceasta inaltime
+    apply_sdps_bias: bool = True                        # aplica biasurile PSR din CAT063 la plot-urile radarului
 
     def __post_init__(self):
         if self.frame is None:
@@ -419,6 +420,14 @@ class UniversalAdapter:
         self._declared: dict[str, str] = {}             # sursa -> format declarat
         self._last_full_tod: dict = {}                  # (sac, sic) -> ultima ora completa (CAT002/034)
         self.asterix_editions: dict = {}                # (sac, sic) -> {categorie: "x.y"} din CAT247
+        self.sensor_state: dict = {}                    # senzor -> starea curenta (CAT034/050, CAT063)
+        self.sdps_status: dict = {}                     # SDPS (SAC/SIC) -> starea curenta (CAT065)
+        self.sdps_events: list = []                     # rapoarte de serviciu SDPS (I065/050)
+        self.sensor_bias: dict = {}                     # senzor -> biasurile anuntate de SDPS (CAT063)
+        self.incs_config: dict = {}                     # (sac, sic) -> configuratia INCS (CAT016)
+        self._nogo: set = set()                         # radare cu I034/050 NOGO: datele lor se arunca
+        self._rdpr: dict = {}                           # (sac, sic) -> ultima valoare I034/050 RDPR
+        self._pending_state: dict = {}                  # (sac, sic) -> stare primita inainte de pozitia radarului
         ref = self.adsb_receiver if self.adsb_receiver else (self.frame.lat0, self.frame.lon0)
         self._modes = adsbmod.ModeSDecoder(ref_latlon=ref)
         self.sapient_nodes: dict = {}                       # profil pe nod (din Registration)
@@ -510,6 +519,9 @@ class UniversalAdapter:
                           "lipsa": s.needs, "note": s.notes} for k, s in sorted(self.sources.items())},
             "erori": self.errors[-20:],
             "aeronave_cooperative": len(self.cooperative),
+            **({"stare_senzori": self.sensor_state} if self.sensor_state else {}),
+            **({"stare_sdps": self.sdps_status} if self.sdps_status else {}),
+            **({"biasuri_sdps": self.sensor_bias} if self.sensor_bias else {}),
         }
 
     def config_template(self) -> dict:
@@ -657,7 +669,7 @@ class UniversalAdapter:
         for cat, blk in blocks:
             if cat == 247:
                 continue
-            if cat in (1, 2, 34, 48, 62, 21, 15, 205):
+            if cat in (1, 2, 34, 48, 62, 21, 15, 16, 63, 65, 205):
                 blk = self._edition_filter(cat, blk)
                 if blk is None:
                     continue
@@ -666,6 +678,9 @@ class UniversalAdapter:
                 continue
             if cat in (15, 205):
                 out.extend(self._spec_asterix(cat, blk, received_at))
+                continue
+            if cat in (16, 63, 65):
+                self._service_asterix(cat, blk)
                 continue
             if cat not in (48, 62, 21):
                 st = self._status(f"CAT{cat:03d}", "asterix")
@@ -789,14 +804,18 @@ class UniversalAdapter:
                 st.need("pozitia tintei: I015/600 P84 sau I015/625 R + I015/627 AZ")
                 return None
             if site is None:
-                st.need("pozitia senzorului INCS (configurare cu SAC/SIC): raportul e polar")
+                st.need("pozitia senzorului INCS (configurare cu SAC/SIC sau mesaje CAT016): raportul e polar")
                 return None
+            # distanta si azimutul sunt fata de punctul de referinta al sistemului (I016/400), daca e cunoscut
+            ref = self.incs_config.get(sid, {}).get("referinta")
+            origin = self.frame.to_xy(ref[0], ref[1]) - site.center if ref else np.zeros(2)
             el = math.radians((f.get("628") or {}).get("EL") or 0.0)
             s_r = (f.get("625") or {}).get("SDR") or site.sigma_range
             s_az = math.radians((f.get("627") or {}).get("SDASZ") or site.sigma_az_deg)
-            p, R = polar_gauss_moments(np.zeros(2), math.radians(az), rng * math.cos(el), s_az, s_r)
+            p, R = polar_gauss_moments(origin, math.radians(az), rng * math.cos(el), s_az, s_r)
             if height is None and (f.get("628") or {}).get("EL") is not None:
-                height = site.antenna_height + rng * math.sin(el)
+                base = ref[2] if ref and ref[2] is not None else site.antenna_height
+                height = base + rng * math.sin(el)
         if "626" in f:
             st.note("I015/626 Doppler (poate fi bistatic): neutilizat in filtru")
         if height is not None and "601" in f:
@@ -848,16 +867,211 @@ class UniversalAdapter:
         return SensorDetection(f"{key}:{tod:.3f}:{f.get('040')}", site.sensor_id, t, lat, lon,
                                np.eye(2) * sig * sig, pd=site.pd, lambda_fa=site.lambda_fa, received_at=received_at)
 
+    # ---------- starea senzorilor si a SDPS (CAT034/050, CAT063, CAT065) si configuratia INCS (CAT016)
+    @staticmethod
+    def _text(item: str, path: str, value) -> str:
+        from .asterix_spec import TABLES
+        return TABLES.get(item, {}).get(path, {}).get(value, str(value))
+
+    def _apply_state(self, site, active: bool, reason: str) -> None:
+        """Activ = tacerea senzorului e informatie negativa valida (senzor operational, fara suprasarcina)."""
+        prev = self.sensor_state.get(site.sensor_id, {}).get("activ")
+        self.sensor_state.setdefault(site.sensor_id, {}).update({"activ": active, "motiv": reason})
+        if self.tracker is not None and site.sensor_id in getattr(self.tracker, "_radar_by_id", {}):
+            self.tracker.set_sensor_state(site.sensor_id, active, reason)
+        else:
+            site.active = active
+        if prev is not None and prev != active:
+            self._status(site.sensor_id, "stare").note(
+                f"{'reactivat' if active else 'dezactivat pentru informatie negativa'}: {reason}")
+
+    def _cat034_status(self, sid, s: dict, st) -> None:
+        """I034/050: starea statiei radar (comuna si pe PSR / SSR / Mode S)."""
+        site = self._by_asterix.get(sid)
+        reasons = []
+        com = s.get("COM") or {}
+        if com.get("NOGO") == 1:
+            if sid not in self._nogo:
+                self.errors.append(("asterix", f"{st.key}: I034/050 NOGO, datele radarului sunt aruncate"))
+            self._nogo.add(sid)
+            st.note("I034/050 NOGO: " + self._text("I034/050", "COM.NOGO", 1) + "; plot-urile si traseele "
+                    "radarului sunt aruncate cat timp starea persista")
+            reasons.append("NOGO")
+        elif sid in self._nogo:
+            self._nogo.discard(sid)
+            st.note("I034/050 NOGO ridicat: datele radarului sunt din nou folosite")
+        if com.get("RDPR") == 1 and self._rdpr.get(sid) != 1 and site is not None:
+            st.note("I034/050 RDPR: procesorul radar a repornit, numerele de traseu se reiau")
+            if self.tracker is not None:
+                self.tracker.reset_external_tracks(site.sensor_id, "I034/050 RDPR")
+        self._rdpr[sid] = com.get("RDPR")
+        if com.get("TSV") == 1:
+            st.note("I034/050 TSV: sursa de timp a radarului e invalida; orele plot-urilor sunt nesigure")
+            reasons.append("timp invalid")
+        if com.get("OVLRDP") == 1 or com.get("OVLXMT") == 1:
+            reasons.append("suprasarcina RDP/transmisie")
+        psr = s.get("PSR")
+        if psr is not None:
+            if psr.get("CHAB") == 0:
+                reasons.append("PSR: " + self._text("I034/050", "PSR.CHAB", 0))
+            if psr.get("OVL") == 1:
+                reasons.append("suprasarcina PSR")
+        elif "SSR" in s or "MDS" in s:
+            st.note("I034/050 fara parte PSR: statia raporteaza doar SSR/Mode S si nu vede drone "
+                    "necooperative; informatia negativa a radarului e dezactivata")
+            if site is not None:
+                site.negative_info = False
+        state = (not reasons, ", ".join(reasons) if reasons else "operational (I034/050)")
+        if site is not None:
+            self._apply_state(site, *state)
+        else:
+            self._pending_state[sid] = state
+
+    def _service_asterix(self, cat: int, blk: bytes) -> None:
+        for rec in decode_block(blk, full=True)[1]:
+            f = rec["fields"]
+            sid = (f.get("010", {}).get("SAC"), f.get("010", {}).get("SIC"))
+            key = f"SAC{sid[0]}/SIC{sid[1]}"
+            st = self._status(key, f"asterix CAT{cat:03d}")
+            if self._violations(rec, st):
+                continue
+            if cat == 63:
+                self._cat063(f, key, st)
+            elif cat == 65:
+                self._cat065(f, key, st)
+            else:
+                self._cat016(f, sid, key, st)
+
+    def _cat063(self, f: dict, key: str, st) -> None:
+        """CAT063: starea si biasurile fiecarui senzor, anuntate de SDPS (ex. ARTAS)."""
+        sensor = f.get("050")
+        if not sensor:
+            return
+        ssid = (sensor["SAC"], sensor["SIC"])
+        skey = f"SAC{ssid[0]}/SIC{ssid[1]}"
+        site = self._by_asterix.get(ssid)
+        s = f.get("060") or {}
+        info = {"sdps": key, "tod": f.get("030")}
+        reasons = []
+        if "CON" in s:
+            info["conexiune"] = self._text("I063/060", "CON", s["CON"])
+            if s["CON"] != 0:
+                reasons.append(info["conexiune"])
+            elif s.get("PSR") == 1:
+                reasons.append("PSR NOGO")
+            for k in ("OPS", "ODP", "OXT", "NPW"):
+                if s.get(k) == 1:
+                    reasons.append(self._text("I063/060", k, 1))
+        if s.get("SPO.EP") == 1 and s.get("SPO.VAL") == 1:
+            msg = f"{skey}: SDPS semnaleaza un posibil atac de spoofing la senzor (I063/060 SPO)"
+            if msg not in [e[1] for e in self.errors]:
+                self.errors.append(("asterix", msg))
+            st.note(msg)
+            if self.tracker is not None:
+                self.tracker._log(self.tracker.now, "spoofing_senzor", senzor=skey, sursa=key)
+        if s.get("TTF.EP") == 1 and s.get("TTF.VAL") == 1:
+            st.note(f"{skey}: tinta de test a senzorului in defect (I063/060 TTF)")
+        bias = {}
+        if "091" in f:
+            bias["psr_az_deg"] = f["091"]
+        if "090" in f:
+            bias["psr_range_m"] = f["090"]["PRB"] * 1852.0
+            bias["psr_range_gain"] = f["090"]["PRG"]
+        if "070" in f:
+            bias["time_ms"] = f["070"]
+            st.note("I063/070 (bias de marcare a timpului) inregistrat, neaplicat: specificatia nu "
+                    "defineste semnul corectiei")
+        if "080" in f or "081" in f:
+            bias["ssr"] = {"az_deg": f.get("081"), "range_m": f["080"]["SRB"] * 1852.0 if "080" in f else None,
+                           "range_gain": f["080"]["SRG"] if "080" in f else None}
+        if bias:
+            self.sensor_bias[skey] = {**bias, "sdps": key}
+        if site is None:
+            if s or bias:
+                st.note(f"stare/biasuri pentru {skey}, senzor neconfigurat (nefolosite)")
+            self.sensor_state.setdefault(skey, {}).update(info)
+            return
+        if s:
+            self.sensor_state.setdefault(site.sensor_id, {}).update(info)
+            self._apply_state(site, not reasons, ", ".join(reasons) if reasons else f"operational (CAT063 {key})")
+        if ("091" in f or "090" in f) and self.apply_sdps_bias:
+            b_az = math.radians(bias.get("psr_az_deg", 0.0))
+            b_r = bias.get("psr_range_m", 0.0)
+            gain = bias.get("psr_range_gain", 0.0)
+            if self.tracker is not None and site.sensor_id in getattr(self.tracker, "registrations", {}):
+                self.tracker.set_registration(site.sensor_id, b_az, b_r, gain, f"CAT063 {key}")
+            st.note(f"biasuri PSR din CAT063 aplicate radarului {site.sensor_id} "
+                    "(theta - b_az; (rho - b_r) / (1 + castig))")
+
+    def _cat065(self, f: dict, key: str, st) -> None:
+        """CAT065: starea SDPS-ului care trimite traseele CAT062 si rapoartele lui de serviciu."""
+        s = self.sdps_status.setdefault(key, {})
+        typ = f.get("000")
+        s["ultimul_mesaj"] = self._text("I065/000", "", typ)
+        s["tod"] = f.get("030")
+        if typ == 2:
+            s["lot"] = f.get("020")
+        if "040" in f:
+            c = f["040"]
+            s["stare"] = self._text("I065/040", "NOGO", c.get("NOGO"))
+            s["suprasarcina"] = c.get("OVL") == 1
+            s["timp_invalid"] = c.get("TSV") == 1
+            s["sdps_selectat"] = self._text("I065/040", "PSS", c.get("PSS"))
+            if c.get("NOGO") != 0:
+                st.note(f"SDPS {s['stare']}: traseele CAT062 de la aceasta sursa sunt nesigure")
+            if c.get("TSV") == 1:
+                st.note("SDPS fara sursa de timp valida: orele traseelor CAT062 sunt nesigure")
+        if "050" in f:
+            ev = self._text("I065/050", "", f["050"])
+            self.sdps_events.append({"sdps": key, "tod": f.get("030"), "eveniment": ev})
+            st.note(f"raport de serviciu SDPS: {ev}")
+            if self.tracker is not None:
+                self.tracker._log(self.tracker.now, "serviciu_sdps", sdps=key, eveniment=ev)
+
+    def _cat016(self, f: dict, sid, key: str, st) -> None:
+        """CAT016: configuratia senzorului INCS: punctul de referinta (pentru distanta/azimut CAT015),
+        emitatoarele si receptoarele (geometria multistatica)."""
+        cfg = self.incs_config.setdefault(sid, {})
+        if "400" in f:
+            lat, lon = f["400"]["LAT"], f["400"]["LON"]
+            h = f.get("405")
+            cfg["referinta"] = (lat, lon, h)
+            site = self._by_asterix.get(sid)
+            if site is None:
+                site = RadarSite(f"INCS-{sid[0]}-{sid[1]}", lat, lon, antenna_height=0.0, sac=sid[0], sic=sid[1],
+                                 negative_info=False, kind="senzor", min_alt=0.0)
+                self.add_site(site)
+                st.site = site.sensor_id
+                st.note("punctul de referinta al senzorului INCS invatat din I016/400 (inaltime MSL din I016/405)")
+                st.need("acoperirea si precizia senzorului INCS (pentru informatie negativa)")
+            else:
+                st.site = site.sensor_id
+                d = float(np.linalg.norm(self.frame.to_xy(lat, lon) - self.frame.to_xy(site.lat, site.lon)))
+                if d > 50.0:
+                    st.note(f"punctul de referinta din I016/400 difera cu {d:.0f} m de pozitia configurata; "
+                            "distantele/azimuturile CAT015 se raporteaza la I016/400")
+        if "410" in f:
+            cfg["emitatoare"] = {t["TID"]: (t["LAT"], t["LON"], t["ALT"]) for t in f["410"]}
+        if "420" in f:
+            cfg["receptoare"] = {r["RID"]: (r["LAT"], r["LON"], r["ALT"]) for r in f["420"]}
+        if "300" in f:
+            cfg["perechi"] = {p["PID"]: (p["TID"], p["RID"]) for p in f["300"]}
+        if "410" in f or "420" in f:
+            st.note(f"geometrie INCS: {len(cfg.get('emitatoare', {}))} emitatoare, "
+                    f"{len(cfg.get('receptoare', {}))} receptoare (I016/410, I016/420)")
+
     def _legacy_asterix(self, cat: int, blk: bytes, received_at) -> list:
         """CAT002/034 (serviciu: ora, pozitia radarului) si CAT001 (plot-uri/trasee vechi)."""
         out = []
-        _, recs = decode_block(blk)
+        _, recs = decode_block(blk, full=cat == 34)
         for rec in recs:
             key = f"SAC{rec.get('sac')}/SIC{rec.get('sic')}"
             st = self._status(key, f"asterix CAT{cat:03d}")
             if self._violations(rec, st):
                 continue
             sid = (rec.get("sac"), rec.get("sic"))
+            if cat == 34 and "050" in rec.get("fields", {}):
+                self._cat034_status(sid, rec["fields"]["050"], st)
             if cat in (2, 34):
                 if "tod" in rec:
                     self._last_full_tod[sid] = rec["tod"]
@@ -869,6 +1083,8 @@ class UniversalAdapter:
                     st.site = site.sensor_id
                     st.note("pozitia radarului invatata din I034/120")
                     st.need("acoperirea si altitudinea minima de detectie (pentru informatie negativa)")
+                    if sid in self._pending_state:
+                        self._apply_state(site, *self._pending_state.pop(sid))
                 continue
             # CAT001: ora trunchiata (I001/141, perioada 512 s) se completeaza cu ultima ora
             # completa din CAT002/034 sau cu ora de sosire
@@ -889,6 +1105,9 @@ class UniversalAdapter:
         return out
 
     def _cat048_rec(self, rec, st, received_at) -> list:
+        if (rec.get("sac"), rec.get("sic")) in self._nogo:
+            self.stats["aruncate_nogo"] += 1
+            return []
         site = self._by_asterix.get((rec.get("sac"), rec.get("sic")))
         if site is None:
             st.need("pozitia radarului (lat, lon, inaltimea antenei), raza si altitudinea minima: "

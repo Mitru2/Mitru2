@@ -38,7 +38,7 @@ from .asterix_spec import CATEGORIES as SPEC
 
 UAPS = {cat: v["uaps"] for cat, v in SPEC.items()}       # {cat: {caz: [nume articol pe FRN]}}
 SPEC_EDITION = {cat: v["edition"] for cat, v in SPEC.items()}
-REFERENCE_EDITION = {c: SPEC_EDITION[c] for c in (48, 62, 21, 34, 1, 2, 15, 16, 205, 247)}
+REFERENCE_EDITION = {c: SPEC_EDITION[c] for c in (48, 62, 21, 34, 1, 2, 15, 16, 63, 65, 205, 247)}
 TABLE_MAJOR = {c: int(e.split(".")[0]) for c, e in SPEC_EDITION.items()}
 ITEM_FRN = {cat: {name: k for k, name in enumerate(v["uaps"].get("default", v["uaps"].get("plot")), 1)
                   if name not in ("-", "RFS")} for cat, v in SPEC.items()}
