@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="descarca vectorii de test ai validatorului Dstl si le verifica amprentele")
     ap.add_argument("--fetch-asterix-captures", metavar="DIR", default=None,
                     help="descarca capturile ASTERIX reale de test (Croatia Control) si le verifica amprentele")
+    ap.add_argument("--fetch-reference", metavar="DIR", default=None,
+                    help="descarca datele de referinta (schema CAP 1.2, capturi DIS) si le verifica amprentele")
     ap.add_argument("--sapient-server", metavar="PORT", type=int, default=None,
                     help="porneste nodul de fuziune SAPIENT (cere --sapient-proto)")
     ap.add_argument("--sapient-proto", metavar="DIR", default=None, help="directorul cu .proto oficiale verificate")
@@ -55,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{c['statut']:9s}] {c['cheie']}: {c['valoare']}\n            sursa: {c['sursa']}")
         return 0
 
-    if a.fetch_sapient or a.fetch_sapient_vectors or a.fetch_asterix_captures:
+    if a.fetch_sapient or a.fetch_sapient_vectors or a.fetch_asterix_captures or a.fetch_reference:
         if a.fetch_sapient:
             from .sapient_proto import fetch
             print(f"definitii SAPIENT descarcate si verificate: {fetch(a.fetch_sapient)}")
@@ -65,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
         if a.fetch_asterix_captures:
             from .pcap import fetch_asterix_captures
             print(f"capturi ASTERIX descarcate si verificate: {fetch_asterix_captures(a.fetch_asterix_captures)}")
+        if a.fetch_reference:
+            from .pcap import fetch_reference
+            print(f"date de referinta descarcate si verificate: {fetch_reference(a.fetch_reference)}")
         return 0
 
     if a.sapient_server is not None:
@@ -125,6 +130,12 @@ def main(argv: list[str] | None = None) -> int:
     utc = utc_from_tod(scn.tod_ref + now)
     events = [track_to_cot(t, tr.frame, utc) for t in conf_all(tr)]
     (Path(a.out) / "cot.xml").write_text("\n".join(events), encoding="utf-8")
+    # alerte CAP 1.2 pentru protectia civila (scenariu simulat: status Exercise)
+    from .cap import alerts_for
+    cap_dir = Path(a.out) / "cap"
+    cap_dir.mkdir(exist_ok=True)
+    for tid, xml in alerts_for(tr, now, utc, "santinela.exercitiu", "Exercise").items():
+        (cap_dir / f"{tid}.xml").write_text(xml, encoding="utf-8")
 
     conf = [t for t in tr.tracks.values() if t.status == CONFIRMED and t.group_id is None]
     print(f"Scenariu: {scn.name} | rapoarte: {len(items)} | trasee: {len(tr.tracks)} "

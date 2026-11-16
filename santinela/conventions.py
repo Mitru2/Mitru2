@@ -123,6 +123,19 @@ _C = [
                "hash-ul manifestului curent include hash-ul Link-ului, hash-ul Link-ului e peste aviz (fara SAM), "
                "VNB/VNA in epoca Unix; codul urmeaza textul si accepta variantele exemplului, cu nota; epoca e "
                "configurabila (drip_epoch)", "verificat", "comparatie text - exemplu in RFC 9575"),
+    # ---------------- DIS / CAP
+    Convention("dis.entity_state", "antet 12 o.; Entity ID, Force ID, tip entitate (8 o.), viteza 3 x float32 si "
+               "pozitie 3 x float64 in ECEF WGS-84, orientare, aspect, extrapolare 40 o., marcaj 1+11, capabilitati; "
+               "big-endian; mai multe PDU-uri pe datagrama; timp = (v >> 1) x 3600 / (2^31 - 1) s de la ora fixa",
+               "verificat", "disectorul Wireshark packet-dis.c; PDU-ul de test open-dis-python (BSD-2) cu valorile lui "
+               "asteptate; capturile Wireshark DIS_EntityState_1/2 (287 + 20 PDU-uri)"),
+    Convention("dis.force_id", "0 altul, 1 prieten, 2 advers, 3 neutru (urmatoarele valori: variante numerotate)",
+               "raport", "NPS DIS Data Dictionary si OpenDIS7 (derivate din SISO-REF-010, UID 6); SISO-REF-010 necitit"),
+    Convention("dis.exercise_only", "datele DIS sunt simulare: intra in COP doar cu dis_exercise=True, ca sursa de tip "
+               "exercitiu (fara informatie negativa)", "presupus", "decizie de proiectare"),
+    Convention("cap.v1_2", "alerta cu scope Restricted implicit; ora cu fus numeric (UTC = -00:00); poligoane 'lat,lon' "
+               "inchise, min. 4 perechi; altitudinea in picioare MSL (nefolosita); status ales explicit",
+               "verificat", "CAP-v1.2-os (OASIS 2010) si schema oficiala CAP-v1.2.xsd (validare in teste)"),
     # ---------------- simbologie
     Convention("app6.sidc", "SIDC de 20 de cifre (MIL-STD-2525D/APP-6D); UAV = set 01 (aer), entitate 110300",
                "presupus", "MIL-STD-2525D (din memorie); de confirmat pe APP-6 nationala"),

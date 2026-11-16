@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from . import adsb as adsbmod
+from . import dis as dismod
 from . import misb as misbmod
 from . import cot as cotmod
 from . import nffi as nffimod
@@ -120,6 +121,8 @@ def detect_format(data) -> str:
             return "asterix-oradis"
         if looks_like_4607(data):
             return "stanag4607"
+        if dismod.looks_like_dis(data):
+            return "dis"
         if adsbmod.looks_like_beast(data):
             return "beast"
         if misbmod.looks_like_klv(data):
@@ -405,6 +408,8 @@ class UniversalAdapter:
     opportunity_min_alt_m: float = 300.0                # doar aeronave peste aceasta inaltime
     apply_sdps_bias: bool = True                        # aplica biasurile PSR din CAT063 la plot-urile radarului
     utc_ref_unix: float | None = None                   # ora Unix pentru t = 0: verifica ferestrele VNB/VNA DRIP
+    dis_exercise: bool = False                          # DIS (simulare) intra in COP doar daca e activat explicit
+    dis_sigma_m: float = 20.0                           # precizia atribuita pozitiilor simulate DIS
     drip_epoch: int = dripmod.F3411_EPOCH               # epoca marcajelor VNB/VNA (F3411: 2019-01-01)
 
     def __post_init__(self):
@@ -575,6 +580,8 @@ class UniversalAdapter:
                 out = []
             elif fmt == "stanag4607":
                 out = self._gmti(bytes(data), received_at)
+            elif fmt == "dis":
+                out = self._dis(bytes(data), received_at, source or "DIS")
             elif fmt in ("klv", "mpegts"):
                 packets = ([p for _, p in misbmod.iter_klv(bytes(data))] if fmt == "klv"
                            else misbmod.klv_from_mpegts(bytes(data)))
@@ -1323,6 +1330,51 @@ class UniversalAdapter:
                     rr_sigma=(tg.get("los_velocity_unc_cms", 0) / 100.0) or 1.0,
                     sensor_lat=f["sensor_lat"], sensor_lon=f["sensor_lon"]))
                 st.accepted += 1
+        return out
+
+    # ---------- DIS (exercitii) ----------
+    def _dis(self, buf: bytes, received_at, source: str) -> list:
+        """Entity State PDU: tintele aeriene ne-prietene devin trasee de exercitiu; fortele proprii,
+        pozitii de echipe. Fara ``dis_exercise=True`` datele sunt doar recunoscute si raportate."""
+        out = []
+        approx = (self.tod_ref + (received_at or 0.0)) % 86400.0
+        for es in dismod.decode(buf):
+            key = f"DIS-EX{es.exercise}"
+            st = self._status(key, "dis")
+            if not self.dis_exercise:
+                st.need("date DIS (simulare): activati dis_exercise=True ca sa intre in COP ca date de exercitiu")
+                continue
+            st.note(f"date de exercitiu DIS (exercitiul {es.exercise}): sursa marcata exercitiu, nu o amestecati "
+                    "cu senzorii reali in operatii")
+            lat, lon, hae = es.geodetic()
+            msl = self._to_msl(lat, lon, hae, st)
+            tod = dismod.tod_from_past_hour(es.seconds_past_hour, approx)
+            if not es.absolute_time:
+                st.note("marcaj de timp DIS relativ (ceasul simulatorului): ora aleasa langa ora de sosire")
+            if es.force == 1:
+                self.friendly[es.uid] = FriendlyPosition(es.uid, tod, lat, lon, msl, es.marking or None,
+                                                         es.type_text, source="DIS")
+                st.accepted += 1
+                continue
+            if es.entity_type[0] != 1 or es.entity_type[1] != 2:
+                st.note(f"entitati DIS {es.kind}/{es.domain} ne-prietene ignorate (nu sunt tinte aeriene)")
+                continue
+            if key not in self._by_name:
+                site = RadarSite(key, lat, lon, negative_info=False, kind="exercitiu", min_alt=0.0, pd=0.99,
+                                 sigma_range=self.dis_sigma_m)
+                self.add_site(site)
+                st.site = key
+            site = self._by_name[key]
+            p = self.frame.to_xy(lat, lon) - site.center
+            ve, vn, _ = es.velocity_enu()
+            s2 = self.dis_sigma_m ** 2
+            cov = np.diag([s2, s2, 1.0, 1.0])
+            t = round(tod_to_t(tod, self.tod_ref), 4)
+            num = (es.site << 32) | (es.application << 16) | es.entity
+            out.append(RadarTrackReport(f"{key}:{es.uid}:{tod:.3f}", key, num, t, float(p[0]), float(p[1]),
+                                        ve, vn, cov, msl, True, received_at=received_at,
+                                        ident=es.marking or es.uid))
+            st.accepted += 1
         return out
 
     def _to_msl(self, lat: float, lon: float, h_hae: float | None, st) -> float | None:

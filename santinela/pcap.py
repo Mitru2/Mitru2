@@ -164,6 +164,23 @@ def fetch_asterix_captures(directory, timeout: float = 30.0) -> Path:
     return d
 
 
+def fetch_reference(directory, timeout: float = 30.0) -> Path:
+    """Descarca datele de referinta din santinela/data/reference_data.json (schema CAP 1.2,
+    capturile DIS Wireshark) si le verifica amprentele. Nu se redistribuie."""
+    import hashlib
+    import json
+    import urllib.request
+    man = json.loads((Path(__file__).parent / "data" / "reference_data.json").read_text(encoding="utf-8"))
+    d = Path(directory)
+    d.mkdir(parents=True, exist_ok=True)
+    for name, info in man["files"].items():
+        data = urllib.request.urlopen(info["url"], timeout=timeout).read()
+        if hashlib.sha256(data).hexdigest() != info["sha256"]:
+            raise PcapError(f"amprenta diferita: {name}")
+        (d / name).write_bytes(data)
+    return d
+
+
 def build_udp_pcap(payloads: list[bytes], port: int = 8600, nanosecond: bool = False) -> bytes:
     """Captura pcap Ethernet/IPv4/UDP (pentru teste si simulare)."""
     out = (b"\x4d\x3c\xb2\xa1" if nanosecond else b"\xd4\xc3\xb2\xa1")[::-1][::-1]

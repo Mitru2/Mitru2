@@ -1,0 +1,20 @@
+{
+  "note": "Date de referinta pentru verificare, descarcate la cerere si verificate pe amprenta; nu se redistribuie.",
+  "files": {
+    "CAP-v1.2.xsd": {
+      "url": "https://docs.oasis-open.org/emergency/cap/v1.2/CAP-v1.2.xsd",
+      "sha256": "b7798ef25868b068c97b268bda02d067c7d4ba9373adc5638bf37105804ee723",
+      "license": "OASIS (Copyright OASIS Open 2010)"
+    },
+    "DIS_EntityState_1.pcapng": {
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/DIS_EntityState_1.pcapng",
+      "sha256": "74d671d65e34501b796e75a429d71a28d608b28ac00926f81c26552c0146ce3c",
+      "license": "captura publica Wireshark SampleCaptures (licenta nespecificata)"
+    },
+    "DIS_EntityState_2.pcapng": {
+      "url": "https://wiki.wireshark.org/uploads/__moin_import__/attachments/SampleCaptures/DIS_EntityState_2.pcapng",
+      "sha256": "0f9d26dc8779785d78a664f05df78d988c8583aed98cf255b5b70035d2aa7810",
+      "license": "captura publica Wireshark SampleCaptures (licenta nespecificata)"
+    }
+  }
+}
