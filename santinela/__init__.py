@@ -7,4 +7,4 @@ from .track import Track, TENTATIVE, CONFIRMED, DELETED
 
 __all__ = ["Params", "DEFAULT", "LocalFrame", "Report", "SensorDetection", "Measurement",
            "Tracker", "Track", "TENTATIVE", "CONFIRMED", "DELETED"]
-__version__ = "0.3.0"
+__version__ = "0.4.0"

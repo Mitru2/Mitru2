@@ -19,6 +19,9 @@ Cum a fost verificat fiecare decodor: [VERIFICARE.md](VERIFICARE.md).
 | ASTERIX CAT001/002/034 | idem | plot-uri vechi; ora completă și poziția radarului (I034/120) | – |
 | ASTERIX CAT015 (INCS) | idem | trasee/detecții necooperative (radar pasiv, multistatic) | poziția senzorului pentru formele polare |
 | ASTERIX CAT205 | idem | poziția emițătorului (radiogoniometrie) sau doar relevment | poziția senzorului pentru relevment |
+| ASTERIX CAT016 | idem | punctul de referință INCS (pentru CAT015 polar), emițătoare/receptoare | – |
+| ASTERIX CAT063 | idem | starea și biasurile fiecărui senzor, de la SDPS | poziția senzorului (SAC/SIC) ca să se aplice |
+| ASTERIX CAT065 | idem | starea SDPS-ului, loturi, rapoarte de serviciu | – |
 | ASTERIX CAT247 | idem | edițiile declarate de sursă | – |
 | ASTERIX cu încadrare ORADIS | antet ORADIS | ca mai sus | – |
 | **SAPIENT** protobuf (BSI Flex 335 v2.0) | 4 octeți de lungime LE + mesaj | detecții, trasee, starea nodului | definițiile `.proto` oficiale (descărcate, verificate pe amprente) |
@@ -28,7 +31,8 @@ Cum a fost verificat fiecare decodor: [VERIFICARE.md](VERIFICARE.md).
 | **Cursor-on-Target** XML / **TAK Protocol v1** | `<event`, `bf 01 bf`, `bf`+varint | detecții, trasee, forțe proprii | – |
 | **NFFI** 1.3/1.4 (ADatP-36) | rădăcina XML NFFI | forțe proprii | – |
 | FFI MTF (APP-11) | text MTF | semnalat, nu decodat | un gateway acreditat |
-| **Remote ID** (ASTM F3411 / EN 4709-002) | mesaj de 25 o., BT AD `16 FA FF 0D`, Wi-Fi IE `DD FA0BBC 0D`, NAN | drona cooperativă + poziția operatorului | – |
+| **Remote ID** (ASTM F3411 / EN 4709-002) | mesaj de 25 o., BT AD `16 FA FF 0D`, Wi-Fi IE `DD FA0BBC 0D`, NAN | drona cooperativă + poziția operatorului + starea autentificării DRIP | adresa emițătorului ca `source`; ancore DRIP de încredere (opțional) |
+| **DIS** Entity State (IEEE 1278.1) | antet DIS coerent, lungimi înlănțuite | ținte de exercițiu, echipe proprii | `dis_exercise=True` (altfel doar raportat) |
 | **ADS-B** Mode S DF17/18 | Beast (`1a`), AVR (`*…;`), SBS (`MSG,`), readsb JSON | aeronave cooperative | poziția receptorului pentru CPR local (opțional) |
 | **NMEA 0183** `TTM`, `TLL`, `HDT` | `$…*hh`, suma de control verificată | trasee radar navale | poziția radarului pentru `TTM`; capul pentru relevmente relative |
 | JSON de producător | orice alt JSON | detecții sau trasee | un profil (`JsonProfile`); fără el, câmpurile sunt ghicite după nume |
@@ -48,6 +52,9 @@ Principii comune:
   senzorului (sau cu `mag_declination_deg` din configurare).
 - `requirements()` spune, pe surse, ce lipsește; `config_template()` dă un șablon de completat.
 
+Ieșiri: GeoJSON (hartă), CoT/TAK, SAPIENT (nod de fuziune) și **CAP 1.2** (alerte pentru
+protecția civilă, secțiunea 11).
+
 ## 2. ASTERIX (EUROCONTROL)
 
 - **Decodor condus de specificație.** UAP-urile și structura articolelor (fix, extins, repetitiv,
@@ -66,8 +73,25 @@ Principii comune:
   zbor); trasee: I048/161 + 042 + 200 + 210. Distanța oblică devine distanță la sol când se știe
   înălțimea; poziția și covarianța se calculează prin cuadratură.
 - **CAT015 / CAT205** (supraveghere necooperativă, radiogoniometrie): CAT015 cu WGS-84 și
-  covarianță corelată se folosește direct; formele polare cer poziția senzorului; țintele
-  simulate sunt ignorate.
+  covarianță corelată se folosește direct; formele polare se raportează la punctul de referință
+  al sistemului din **CAT016** (I016/400, înălțime MSL din I016/405) sau la poziția configurată;
+  țintele simulate sunt ignorate.
+- **Starea radarului (I034/050)**: `NOGO` = „datele trebuie aruncate de un SDPS operațional” →
+  plot-urile și traseele radarului sunt aruncate cât timp starea persistă; `RDPR` (repornirea
+  procesorului) → numerele de traseu ale radarului se resetează în tracker; canal PSR neselectat,
+  suprasarcină sau sursă de timp invalidă → tăcerea radarului nu mai e informație negativă; o
+  stație care raportează doar SSR/Mode S (fără parte PSR) nu dă niciodată informație negativă
+  pentru drone (nu le poate vedea).
+- **CAT063 (starea senzorilor de la SDPS)**: conexiune (operațional / degradat / inițializare /
+  neconectat), PSR NOGO, suprasarcini, „nu se primesc plot-uri” → suspendă informația negativă;
+  posibil atac de spoofing (SPO) → semnalat. Biasurile PSR se aplică plot-urilor după formulele
+  specificației: θ = θ_m − b_az, ρ = (ρ_m − b_ρ) / (1 + câștig). Estimarea proprie a trackerului
+  continuă doar ca verificare (jurnal: `inregistrare_radar_comparatie`). Biasul de marcare a
+  timpului (I063/070) e înregistrat, dar neaplicat: specificația nu-i definește semnul.
+- **CAT065 (starea SDPS)**: operațional / degradat / neconectat, suprasarcină, sursă de timp,
+  sfârșit de lot, rapoarte de serviciu (radar principal căzut, sincronizat pe radarul de rezervă…).
+- Textele valorilor din tabele (ex. „Not currently connected”) sunt generate din asterix-specs
+  (`TABLES` în `asterix_spec.py`).
 
 ## 3. SAPIENT (BSI Flex 335 v2.0, baza AEDP-4869)
 
@@ -127,7 +151,26 @@ NFFI XML 1.3/1.4 (STANAG 5527, acum ADatP-36): poziții proprii, folosite ca for
 Mesaje de 25 de octeți: Basic ID, Location/Vector, Authentication (prezența semnalată), Self-ID,
 System (poziția operatorului), Operator ID, Message Pack. Purtătoare: Bluetooth 4 (legacy) și 5,
 Wi-Fi Beacon, Wi-Fi NAN. Drona cu Remote ID devine cooperativă; un traseu care se potrivește cu ea
-e marcat. **Semnătura din mesajele Authentication nu este verificată criptografic.**
+e marcat.
+
+**Autentificarea** (`drip.py`) e verificată criptografic după DRIP (RFC 9575 / RFC 9374):
+
+- paginile mesajului Authentication se reasamblează pe emițător (sursa = adresa MAC Bluetooth /
+  Wi-Fi); o pagină pierdută, inclusiv pagina 0, se reface din paritatea XOR (FEC);
+- **DRIP Link**: avizul unei autorități (HDA/RAA) pentru DET-ul și cheia dronei; cu o ancoră de
+  încredere configurată (`drip_trust_anchors`), cheia dronei devine „de încredere”; fără ea, cheia
+  e folosită (legată criptografic de DET prin hash cSHAKE128), dar nu e de încredere;
+- **DRIP Wrapper** (până la 4 mesaje semnate, și pe transport extins) și **DRIP Manifest**
+  (hash-uri ale mesajelor trimise în clar): semnătura Ed25519 a dronei, mesajele confirmate în clar,
+  fereastra VNB–VNA (dacă se dă ora Unix `utc_ref_unix`);
+- starea pe emițător după anexa A din RFC 9575: Partial, Unsupported, Unverifiable, Verified,
+  Trusted, Unverified, Questionable, Conflicting;
+- o autentificare invalidă e semnalată ca **posibilă falsificare**, iar traseul potrivit cu acel
+  Remote ID devine „suspect”, nu „neutru”;
+- autentificările ASTM de tip 1–4 depind de un serviciu extern și sunt raportate „Unsupported”.
+
+O semnătură validă arată doar că emițătorul are cheia; corelarea poziției semnate cu senzorii
+(`annotate_tracks`) e validarea cerută de RFC 9575 §6.4.2.
 
 ## 9. ADS-B direct (1090 MHz)
 
@@ -135,7 +178,25 @@ Mode S DF17/18 cu CRC-24 și decodare CPR globală (pereche par/impar) sau local
 receptor); formatele Beast (cu escape), AVR, SBS/BaseStation și readsb JSON. Folosit pentru
 aeronavele cooperative și calibrarea radarelor, fără CAT021.
 
-## 10. Legături de date cu distribuție controlată
+## 10. DIS (exerciții)
+
+Entity State PDU (IEEE 1278.1): antet, Entity ID, Force ID, tip de entitate, viteză și poziție
+în ECEF WGS-84 (convertite în latitudine/longitudine/înălțime și viteză est/nord), marcaj. Datele
+DIS sunt simulate: intră în imaginea operațională doar cu `dis_exercise=True`, ca sursă de tip
+„exercitiu” fără informație negativă. Țintele aeriene ne-prietene devin trasee de exercițiu,
+forțele prietene (Force ID 1) poziții de echipe; restul e ignorat, cu notă.
+
+## 11. CAP 1.2 (alerte pentru protecția civilă)
+
+`cap.py` transformă un traseu confirmat într-o alertă OASIS CAP 1.2: zona = elipsa de 95 % a
+poziției curente plus elipsele conului T+5/10/15 min, ca poligoane WGS-84; eveniment, severitate
+și răspuns după identitatea APP-6 (ostil → `Severe`, `Shelter`; suspect → `Moderate`, `Monitor`);
+certitudine după starea traseului; `Update` / `Cancel` cu referințe. Alerta implicită e
+`Restricted` (pentru autorități); statutul (`Actual`, `Exercise`, `Test` …) se alege explicit,
+iar instrucțiunile pentru populație sunt textul autorității. Scenariile scriu `out/cap/*.xml` cu
+statutul `Exercise`.
+
+## 12. Legături de date cu distribuție controlată
 
 Link 16, JREAP, Link 11/22, VMF, OTH-Gold și ADatP-3 **nu se implementează în afara mediului
 acreditat**. Arhitectura recomandată: un **gateway acreditat** (comercial sau național) livrează
@@ -143,14 +204,14 @@ spre SANTINELA CoT, ASTERIX CAT062 sau SAPIENT, iar SANTINELA le citește ca pe 
 Punctul de extensie `declare_source()` / `register_decoder()` există doar pentru un decodor scris
 în mediul acreditat; fără el, sursa apare în `requirements()` cu nevoia de gateway.
 
-## 11. Ce rămâne
+## 13. Ce rămâne
 
 | Element | Stare |
 |---|---|
-| ASTERIX CAT129, CAT016, CAT063, CAT065 | neimplementate (structura există în asterix-specs; lipsesc interpretoarele) |
-| STANAG 4676 (trasee ISR) | neimplementat |
-| DIS / CAP | neimplementate |
-| Verificarea criptografică a autentificării Remote ID | neimplementată (doar prezența) |
+| ASTERIX CAT129 | neimplementat: nu am găsit o specificație EUROCONTROL publicată pentru această categorie |
+| STANAG 4676 (trasee ISR, AEDP-12) | neimplementat: schema XSD e în anexa C a AEDP-12, cu distribuție contra cost / restricționată |
+| DIS: alte PDU-uri (Fire, Detonation, Transmitter, Signal) | neimplementate; doar Entity State |
+| Autentificarea Remote ID ASTM de tip 1–4 | nesuportată (cere serviciul extern al validatorului) |
 | Rularea Test Harness-ului Dstl complet (ca proces) | nerulată; regulile lui sunt reproduse și testate pe vectorii oficiali |
 | Capturi reale de la echipamentele proprii | lipsesc: necesare pentru fiecare radar/senzor (ediția UAP, convenția Doppler, referința înălțimii) |
 

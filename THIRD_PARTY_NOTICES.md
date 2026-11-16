@@ -66,6 +66,45 @@ Copyright Sensors & Signals LLC https://www.snstac.com
 Copyright 2020 Delta Bravo-15 <deltabravo15ga@gmail.com>
 ```
 
+### open-dis-python — PDU-ul de test Entity State (BSD-2-Clause)
+
+`tests/test_dis_cap.py` conține PDU-ul de test `tests/EntityStatePdu-26.raw` (144 de octeți) din
+open-dis-python și valorile așteptate de testul lor.
+
+```
+BSD 2-Clause License
+
+Copyright (c) 2023, Open DIS
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### Vectori de test din standarde
+
+- RFC 8032 §7.1 (vectorii Ed25519) și RFC 9575 anexa B.2.1 (exemplul DRIP), în
+  `tests/test_drip.py` — IETF Trust; componentele de cod din RFC-uri sunt sub licența Revised BSD.
+- NIST SP 800-185, exemplele cSHAKE128 #1 și #2, în `tests/test_drip.py` — lucrare a guvernului SUA.
+
 ### World Magnetic Model 2025 — coeficienți (domeniu public)
 
 `santinela/data/WMM2025.COF` — coeficienții publicați de NOAA NCEI și British Geological Survey.
@@ -98,7 +137,10 @@ SOFTWARE.
 | Sursă | Licență | Ce s-a folosit |
 |---|---|---|
 | Wireshark, disectorul `packet-stanag4607.c` | GPL-2.0 | formulele de codare SA32/BA32/B16 și tabelul de clasificare, ca fapte de verificare; codul nu e copiat |
-| opendroneid-core-c | Apache-2.0 | aranjamentul purtătoarelor radio Remote ID (BT AD, Wi-Fi IE, NAN), ca fapte de interfață |
+| opendroneid-core-c | Apache-2.0 | aranjamentul purtătoarelor radio Remote ID (BT AD, Wi-Fi IE, NAN) și al paginilor Authentication, ca fapte de interfață |
+| Wireshark, disectorul `packet-dis.c` | GPL-2.0 | structura Entity State PDU, ca fapte de verificare; codul nu e copiat |
+| NPS DIS Data Dictionary, OpenDIS7 | – | valorile Force ID (SISO-REF-010 UID 6) |
+| RFC 9374, RFC 9575, CAP-v1.2-os (OASIS) | – | formatele DET/DRIP și CAP |
 | „The 1090 MHz Riddle” (Junzi Sun) | – | mesajele Mode S de referință din `tests/test_p1_sources.py` |
 | standardele BSI Flex 335, AEDP-7, MISB, ASTM F3411, ADatP-36, MIL-STD-2525D | – | interfețele publicate |
 
@@ -112,6 +154,7 @@ commitul și amprenta SHA-256 a fiecărui fișier.
 | Definițiile `.proto` SAPIENT BSI Flex 335 v2.0 (Dstl, `SAPIENT-Proto-Files`) | neconfirmată | `sapient_bsi_flex_335_v2_0.json` | `--fetch-sapient DIR` |
 | Vectorii de test ai validatorului Dstl (`BSI-Flex-335-v2-Test-Harness`, commit 6a2999d) | Apache-2.0, Crown copyright | `sapient_test_vectors.json` | `--fetch-sapient-vectors DIR` |
 | Capturile ASTERIX și ieșirile de referință Croatia Control (`CroatiaControlLtd/asterix`, commit 790bca7) | GPL-2.0 | `asterix_test_captures.json` | `--fetch-asterix-captures DIR` |
+| Schema CAP-v1.2.xsd (OASIS) și capturile DIS_EntityState_1/2 (Wireshark SampleCaptures) | OASIS; nespecificată | `reference_data.json` | `--fetch-reference DIR` |
 
 ## 4. Încărcate de vizualizator din rețea
 

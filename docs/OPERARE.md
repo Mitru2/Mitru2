@@ -8,7 +8,7 @@ Cerințe: Python ≥ 3.10, numpy ≥ 1.24, scipy ≥ 1.10. Fără alte dependen�
 cd santinela-tcde
 python -m venv .venv && . .venv/bin/activate
 pip install -e '.[test]'
-python -m pytest                     # 341 de teste trec, 9 sărite (vezi VERIFICARE.md)
+python -m pytest                     # 388 de teste trec, 13 sărite (vezi VERIFICARE.md)
 ```
 
 ## 2. Scenariile demonstrative
@@ -28,6 +28,7 @@ Fiecare rulare scrie în directorul `--out`:
 | `cop.geojson` | traseele (netezite), elipsele 95 %, conul T+5/10/15, grupurile, destinațiile (strat „umbră”), observatorii, radarele și acoperirea lor |
 | `jurnal.json` | jurnalul de audit: asocieri, confirmări (regula și autorul), uniri, anulări, refuzuri de înregistrare |
 | `cot.xml` | traseele confirmate ca evenimente Cursor-on-Target, pentru TAK/ATAK |
+| `cap/<traseu>.xml` | alertele CAP 1.2 pentru protecția civilă (statut `Exercise` în scenarii) |
 
 **Harta:** deschideți `viewer/index.html` și încărcați `out/cop.geojson`, sau serviți
 directorul rădăcină cu `python -m http.server` și deschideți `/viewer/`. Vizualizatorul încarcă
@@ -68,7 +69,7 @@ un șablon de configurare de completat.
       "max_range": 60000, "min_alt": 300,
       "pd": 0.85, "sigma_range": 50, "sigma_az_deg": 0.5, "sigma_rr": 1.0,
       "lambda_fa": 1e-10,
-      "asterix_editions": {"48": "1.32", "34": "1.29"}
+      "asterix_editions": {"48": "1.32", "34": "1.29", "63": "1.7", "65": "1.6"}
     },
     {
       "sensor_id": "RADAR-NAVAL-1", "lat": 45.15, "lon": 29.65,
@@ -78,6 +79,9 @@ un șablon de configurare de completat.
       "sensor_id": "SAPIENT-NOD-7", "lat": 45.20, "lon": 28.80,
       "mag_declination_deg": null, "kind": "senzor", "negative_info": false
     }
+  ],
+  "drip_trust_anchors": [
+    {"det": "2001:0030:0280:1405:a29b:3ff4:2226:c04e", "key": "<cheia Ed25519 a autoritatii, 64 hex>", "name": "HDA nationala"}
   ],
   "json_profiles": [
     {"name": "producator-x", "match": "targets", "source_const": "X-1",
@@ -128,6 +132,19 @@ Bucla completă, cu rapoarte întârziate: `santinela/sim.py`, funcția `run`.
 
 `feed_file(cale)` citește un fișier întreg (pcap/pcapng, flux binar, text pe linii).
 
+Parametri ai adaptorului (constructor `UniversalAdapter(...)` sau `from_config(..., **kw)`):
+`apply_sdps_bias` (biasurile PSR din CAT063, implicit da), `utc_ref_unix` (ora Unix pentru t = 0,
+pentru ferestrele DRIP), `drip_epoch`, `dis_exercise` (DIS intră în COP doar dacă e `True`),
+`dis_sigma_m`.
+
+### 4.4 Remote ID și autentificarea DRIP
+
+Dați ca `source` adresa emițătorului (MAC Bluetooth / Wi-Fi): paginile mesajului Authentication se
+reasamblează pe emițător. Starea autentificării apare în nota sursei, în `CooperativeReport.auth`,
+în jurnal (`autentificare_remoteid`) și pe traseu (`cooperative_auth`). O autentificare invalidă
+apare în `errors` ca posibilă falsificare și face traseul „suspect”. Cheile autorităților de
+încredere se dau în `drip_trust_anchors` (DET-ul scris cu toate cele 8 grupe) sau cu `adapter.drip.trust_anchor(det, cheie)`.
+
 ## 5. SAPIENT
 
 ```bash
@@ -153,19 +170,37 @@ pub.publish(tracker, now_utc)      # trimite traseele noi/actualizate, șterge p
 UID-ul fiecărui traseu e stabil; `stale` = 60 s implicit. Identitatea „ostil” apare doar după
 `Tracker.set_identity(track_id, "ostil", author="...", reason="...")`.
 
-## 7. Date oficiale pentru verificare
+## 7. Alerte CAP 1.2 pentru protecția civilă
+
+```python
+from santinela.cap import track_alert, cancel_alert, utc
+xml = track_alert(traseu, tracker.frame, utc(), "santinela.unitate", "Actual", tracker.now,
+                  instruction="Textul autorității pentru populație")
+```
+
+Statutul (`Actual`, `Exercise`, `Test`, `System`, `Draft`) e obligatoriu și se alege explicit.
+Alerta e `Restricted` implicit; publicarea către populație (`scope="Public"`) e decizia autorității.
+Anularea: `cancel_alert(identificator_anterior, ora_anterioara, expeditor, ora, statut)`.
+
+## 8. DIS (exerciții)
+
+Datele DIS (simulatoare de exercițiu, UDP 3000) sunt recunoscute automat, dar intră în imaginea
+operațională doar cu `UniversalAdapter(..., dis_exercise=True)`, ca sursă de tip „exercitiu”.
+
+## 9. Date oficiale pentru verificare
 
 ```bash
 python -m santinela.cli --fetch-sapient date/sapient_proto \
                         --fetch-sapient-vectors date/vectori_dstl \
-                        --fetch-asterix-captures date/capturi_asterix
+                        --fetch-asterix-captures date/capturi_asterix \
+                        --fetch-reference date/referinta
 ```
 
 Variabilele de mediu care activează testele suplimentare sunt în
 [VERIFICARE.md](VERIFICARE.md#3-testele-care-cer-date-oficiale). Datele descărcate rămân pe
 mașina dumneavoastră: nu se redistribuie.
 
-## 8. Convenții
+## 10. Convenții
 
 ```bash
 python -m santinela.cli --conventions

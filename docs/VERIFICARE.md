@@ -1,8 +1,8 @@
 # Verificare
 
-Starea la 15.11.2026: **341 de teste trec, 9 sunt sărite** (`python -m pytest`, ~17 s). Cele 9
+Starea la 16.11.2026: **388 de teste trec, 13 sunt sărite** (`python -m pytest`, ~27 s). Cele 13
 sărite au nevoie de date oficiale care nu pot fi incluse în proiect; cu datele descărcate trec
-toate (secțiunea 3).
+toate **401** (secțiunea 3).
 
 ## 1. Criteriile planului v2
 
@@ -36,13 +36,35 @@ octeți sau valori produse **independent** de el.
 | EGM96 | cele 6 puncte de test NGA | sub 5 mm (grila globală); interpolarea regională < 0,06 m | – |
 | Mode S / ADS-B | mesajele de referință publice (ex. `8D4840D6202CC371C32CE0576098`) | identificare, poziție CPR, viteză, CRC | – |
 | TAK Protocol v1 | descriptorii takproto 3.0.1, citiți ca date | numere și tipuri de câmpuri identice | – |
+| ASTERIX — starea senzorilor | trafic real Croatia Control | I034/050 (PSR/SSR/Mode S) bit cu bit și CAT065 identice cu decodorul de referință | generatorul pierdea prefixul grupurilor imbricate: nume suprapuse în I021/040, I021/090, I048/020, I063/060 |
+| ASTERIX CAT063 — biasuri | formulele din observațiile I063/080–091 | aplicate exact (θ − b; (ρ − b)/(1 + câștig)) | – |
+| cSHAKE128 / Keccak | exemplele NIST SP 800-185 #1 și #2; SHAKE128 din hashlib | identice | – |
+| Ed25519 | vectorii RFC 8032 §7.1; biblioteca `cryptography` (independentă) | identice (semnare și verificare) | – |
+| DRIP (Remote ID) | exemplul complet RFC 9575 anexa B.2.1 | DET ↔ cheie, cele 8 hash-uri de mesaj, semnăturile Wrapper și Manifest, paginile cu FEC reproduse octet cu octet; orice pagină pierdută refăcută | exemplul se abate de la text în 4 puncte (secțiunea 2.1) |
+| DIS Entity State | disectorul Wireshark `packet-dis.c`; PDU-ul de test open-dis-python; capturile Wireshark | valorile așteptate de open-dis; 287 + 20 de PDU-uri coerente (inclusiv 10 PDU-uri într-o datagramă) | – |
+| CAP 1.2 | schema oficială OASIS CAP-v1.2.xsd și textul CAP-v1.2-os | alertele, actualizările și anulările trec schema; regulile din text verificate separat | – |
 | pcap / pcapng | capturile reale + capturi construite (VLAN, SLL, nanosecunde) | citite corect | – |
 
+### 2.1 Abaterile exemplului RFC 9575 față de text
+
+Exemplul din anexa B.2.1 e semnat corect, dar diferă de textul normativ în patru puncte. Codul
+urmează textul și acceptă și variantele exemplului, cu o notă în rezultat:
+
+1. Link-ul e trimis cu SAM `0x04` (Frame în tabelul 1), nu `0x01`; e recunoscut sigur pentru că
+   DET-ul copilului e hash-ul cheiei lui.
+2. Hash-ul manifestului curent include și hash-ul Link-ului (textul, §4.4.3 pasul 4, îl omite).
+3. Hash-ul Link-ului din Manifest e calculat peste avizul semnat (fără octetul SAM), nu peste
+   pagini (§4.4.3.1).
+4. VNB/VNA sunt în epoca Unix, nu în epoca F3411 (2019-01-01); epoca e configurabilă (`drip_epoch`).
+
+Legătura DET ↔ cheie se reproduce cu HOST_ID = cheia Ed25519 de 32 de octeți, fără eticheta
+curbei din figura 2 a RFC 9374.
+
 Statutul fiecărei convenții (verificat / raport / presupus) e în `santinela/conventions.py`.
-Rămân **presupuse**: `cot.ce` (nivelul de încredere al razei CE în CoT) și SIDC-ul APP-6
-(de confirmat pe APP-6 națională). Rămân **din raport** (sursa primară necitită aici):
-încadrarea SAPIENT pe TCP, covarianța SAPIENT în `object_info`, STANAG 4607 D32.7 și D31,
-NFFI → ADatP-36.
+Rămân **presupuse**: `cot.ce` (nivelul de încredere al razei CE în CoT), SIDC-ul APP-6
+(de confirmat pe APP-6 națională) și regula „DIS doar ca exercițiu”. Rămân **din raport** (sursa
+primară necitită aici): încadrarea SAPIENT pe TCP, covarianța SAPIENT în `object_info`, STANAG 4607
+D32.7 și D31, NFFI → ADatP-36, valorile DIS Force ID (din surse NPS derivate din SISO-REF-010).
 
 ## 3. Testele care cer date oficiale
 
@@ -52,19 +74,22 @@ verifică pe amprente SHA-256 fixate în `santinela/data/`:
 ```bash
 python -m santinela.cli --fetch-sapient date/sapient_proto \
                         --fetch-sapient-vectors date/vectori_dstl \
-                        --fetch-asterix-captures date/capturi_asterix
+                        --fetch-asterix-captures date/capturi_asterix \
+                        --fetch-reference date/referinta
 
 SANTINELA_SAPIENT_PROTO=date/sapient_proto \
 SANTINELA_SAPIENT_VECTORS=date/vectori_dstl \
 SANTINELA_ASTERIX_CAPTURES=date/capturi_asterix \
-python -m pytest            # 350 de teste, 0 sărite
+SANTINELA_REFERENCE=date/referinta \
+python -m pytest            # 401 teste, 0 sărite
 ```
 
 | Variabilă | Teste deblocate |
 |---|---|
 | `SANTINELA_SAPIENT_PROTO` | decodarea și validarea pe schema oficială, nodul de fuziune pe schema oficială (`test_sapient_node.py`, `test_sapient_vectors.py`) |
 | `SANTINELA_SAPIENT_VECTORS` | cei 231 de vectori Dstl (`test_sapient_vectors.py`) |
-| `SANTINELA_ASTERIX_CAPTURES` | traficul real Croatia Control (`test_captures.py`) |
+| `SANTINELA_ASTERIX_CAPTURES` | traficul real Croatia Control (`test_captures.py`, `test_asterix_status.py`) |
+| `SANTINELA_REFERENCE` | schema oficială CAP 1.2 și capturile DIS Wireshark (`test_dis_cap.py`; validarea CAP cere și `lxml`) |
 
 Dacă un depozit sursă se schimbă, descărcarea se oprește la prima amprentă diferită; manifestul
 se actualizează doar după revizuirea diferențelor.
@@ -75,4 +100,7 @@ se actualizează doar după revizuirea diferențelor.
   reală (ediția UAP, semnul Doppler, referința înălțimii, altitudinea minimă, alarmele false).
 - **Test Harness-ul Dstl** rulat ca proces (cere .NET); regulile lui sunt reproduse și verificate
   pe vectorii lui oficiali.
+- **DRIP pe drone reale**: verificat pe exemplul RFC și pe lanțuri sintetice; lanțul real de
+  încredere (cheile autorităților HDA/RAA) depinde de registrul național DRIP, care încă nu există.
+- **ASTERIX CAT129** și **STANAG 4676**: fără specificație publică disponibilă.
 - **Parametrii trackerului** (`config.py`) pe date reale: se calibrează în mod umbră (Faza 9).

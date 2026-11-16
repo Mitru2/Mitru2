@@ -15,7 +15,8 @@ fiecare mecanism. Pentru operare vezi [OPERARE.md](OPERARE.md), pentru standarde
  ASTERIX, SAPIENT, 4607, ──► UniversalAdapter ──► Measurement ──► Tracker ──► Track ──► GeoJSON (hartă)
  CoT, NFFI, Remote ID,       detectare format     (z, R, H)        GNN pe scanări      ├─► CoT / TAK
  ADS-B, MISB/KLV, NMEA,      decodare             RadarTrackReport SPRT, IMM, RTS      ├─► SAPIENT (nod de fuziune)
- JSON, pcap                  normalizare          NegativeEvent    uniri, grupuri      └─► jurnal (audit)
+ DIS, JSON, pcap             normalizare          NegativeEvent    uniri, grupuri      ├─► CAP 1.2 (protecție civilă)
+                             stare senzori, DRIP                                       └─► jurnal (audit)
                              (convenții)          cooperative ──► înregistrarea radarelor
 ```
 
@@ -75,6 +76,9 @@ fiecare mecanism. Pentru operare vezi [OPERARE.md](OPERARE.md), pentru standarde
 | `trackmodel.py` | modelul comun de traseu, SIDC APP-6D / 2525D, tip CoT |
 | `nffi.py` | NFFI XML 1.3/1.4; recunoaște FFI MTF |
 | `remoteid.py` | Remote ID ASTM F3411 / EN 4709-002 (BT 4/5, Wi-Fi Beacon, NAN) |
+| `drip.py` | autentificarea Remote ID: DRIP (RFC 9575 / 9374), Ed25519, cSHAKE128, pagini cu FEC, stări pe emițător |
+| `dis.py` | DIS Entity State (IEEE 1278.1), conversii ECEF ↔ WGS-84, pentru exerciții |
+| `cap.py` | ieșire CAP 1.2 (OASIS): alerte pentru protecția civilă |
 | `adsb.py` | Mode S DF17/18: CRC-24, CPR global/local; Beast, AVR, SBS, readsb JSON |
 | `misb.py` | MISB ST 0601 / ST 0903 (VMTI) / ST 1201, KLV din MPEG-TS |
 | `geomag.py` | declinația magnetică WMM2025 |
@@ -116,8 +120,16 @@ fiecare mecanism. Pentru operare vezi [OPERARE.md](OPERARE.md), pentru standarde
 - **Decodoarele nu ghicesc în tăcere.** Ce nu se știe (ediție ASTERIX, poziția senzorului,
   unități, nordul de referință) apare în `requirements()`; valorile în afara domeniului din
   specificație refuză înregistrarea în loc s-o citească greșit.
+- **Starea senzorilor contează pentru informația negativă.** Un radar cu NOGO, canal PSR
+  neselectat, suprasarcină, „fără plot-uri” sau deconectat (I034/050, CAT063) nu mai penalizează
+  traseele prin tăcere; un radar doar SSR/Mode S nu penalizează niciodată drone.
+- **Identitatea cooperativă se câștigă, nu se declară.** Un Remote ID cu autentificare DRIP
+  invalidă face traseul „suspect”; doar o semnătură validă cu cheie de încredere, corelată cu
+  senzorii, susține „neutru — autentificat”.
+- **Simularea nu se amestecă cu realitatea.** DIS intră doar în modul exercițiu, iar alertele CAP
+  au statutul ales explicit (`Exercise` în scenarii).
 - **Fără dependențe de rețea la rulare.** Singurele dependențe sunt numpy și scipy. Protobuf,
-  ASTERIX, KLV, pcap, WMM, EGM96 sunt implementate în proiect; datele oficiale care nu pot fi
+  ASTERIX, KLV, pcap, WMM, EGM96, Keccak/cSHAKE128 și Ed25519 sunt implementate în proiect; datele oficiale care nu pot fi
   redistribuite (definițiile SAPIENT, vectorii Dstl, capturile Croatia Control) se descarcă la
   cerere și se verifică pe amprente SHA-256 fixate.
 
